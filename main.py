@@ -9,7 +9,7 @@ import tkinter.font as tkfont
 class FarmManagerApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("星砂岛收益管理器 Pro V28.0")
+        self.title("星砂岛作物收益计算 V1.0")
         self.geometry("1400x850")
         self.setup_styles()
         
@@ -57,7 +57,7 @@ class FarmManagerApp(tk.Tk):
 
     def fix_custom_db_order(self):
         if not messagebox.askyesno("确认", "重置为标准预设顺序？"): return
-        config.DATA_FILE = r"C:\Users\Limy\Documents\FarmManagerData\farm_data_pro.json"
+        
         t_order = ["牧草", "小麦", "甜菜", "空心菜", "卷心菜", "大蒜", "土豆", "山兰稻", "黄瓜", "花生", "大葱", "冬油菜", "大豆", "甘蔗", "辣椒", "青葡萄", "番茄", "西瓜", "樱桃萝卜", "胡萝卜", "红葡萄", "南瓜", "玉米", "蓝莓", "草莓", "樱桃番茄", "苹果树", "橘子树", "雪梨树", "香蕉树", "荔枝树"]
         self.data["crops"].sort(key=lambda c: (0, t_order.index(c.get("name"))) if c.get("name") in t_order else (1, c.get("_db_index", 999)))
         for i, c in enumerate(self.data["crops"]): c["_db_index"] = i
