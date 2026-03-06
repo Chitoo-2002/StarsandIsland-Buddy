@@ -188,7 +188,10 @@ class FormulaViewer:
     def show(parent, crop_name, strategy, app):
         c = next((x for x in app.data["crops"] if str(x["name"])==crop_name), None)
         if not c: return
-        _, F = calc_profits(c, app.data["settings"])
+        
+        # ⚡ 核心修复：补上缺失的第三个参数 custom_ferts
+        _, F = calc_profits(c, app.data["settings"], app.data.get("fertilizers", []))
+        
         if strategy in F: FormulaViewer.render(parent, crop_name, strategy, F[strategy])
 
     @staticmethod
@@ -198,14 +201,17 @@ class FormulaViewer:
         main_frame = tk.Frame(w, bg="#ffffff", padx=20, pady=20)
         main_frame.pack(expand=True, fill="both", padx=15, pady=15)
         tk.Label(main_frame, text=f"{n} - {s}", font=("微软雅黑", 16, "bold"), bg="white", fg="#333").pack(pady=(0, 20))
+        
         def create_section(parent, title, logic_text, val_text, color_logic="#666", color_val="#0055aa"):
             f = tk.Frame(parent, bg="white"); f.pack(fill="x", pady=5)
             tk.Label(f, text=title, font=("微软雅黑", 10, "bold"), bg="white", fg="#888", anchor="w").pack(fill="x")
             tk.Label(f, text=logic_text, font=("微软雅黑", 11), bg="white", fg=color_logic, anchor="w", wraplength=700, justify="left").pack(fill="x", pady=2)
             tk.Label(f, text=val_text, font=("Consolas", 12, "bold"), bg="#f0f8ff", fg=color_val, anchor="w", padx=5, pady=3).pack(fill="x")
+            
         create_section(main_frame, f"【分子】 {d['title_n']}", d['str_n'], d['val_n'], "#e67e22", "#d35400")
         div_frame = tk.Frame(main_frame, height=2, bg="#333"); div_frame.pack(fill="x", pady=15)
         create_section(main_frame, f"【分母】 {d['title_d']}", d['str_d'], d['val_d'], "#27ae60", "#2ecc71")
+        
         res_frame = tk.Frame(main_frame, bg="white", pady=20); res_frame.pack(fill="x")
         tk.Label(res_frame, text="=", font=("Arial", 24), bg="white", fg="#999").pack(side="left", padx=10)
         tk.Label(res_frame, text=f"{d['res']:.2f}", font=("Arial", 28, "bold"), bg="white", fg="#e74c3c").pack(side="left")

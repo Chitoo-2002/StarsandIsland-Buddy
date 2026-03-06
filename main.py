@@ -9,20 +9,28 @@ import tkinter.font as tkfont
 class FarmManagerApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("星砂岛作物收益计算 V1.0")
+        self.title("星砂岛作物收益计算 V1.0 (动态肥料版)")
         self.geometry("1400x850")
         self.setup_styles()
         
+        # 默认肥料 (当 json 中没有时加载)
+        default_ferts = [
+            {"name": "入门催熟", "type": "speed", "effect": 6.0, "cost": 15.0},
+            {"name": "普通催熟", "type": "speed", "effect": 15.0, "cost": 60.0},
+            {"name": "优质催化", "type": "speed", "effect": 25.0, "cost": 180.0},
+            {"name": "入门增产", "type": "yield", "effect": 1.5, "cost": 120.0},
+            {"name": "普通增产", "type": "yield", "effect": 2.5, "cost": 780.0}
+        ]
+
         self.data = {
             "settings": config.DEFAULT_SETTINGS.copy(), 
             "crops": [], 
             "display_columns": ["verified", "name", "type", "process_status", "best_strategy", "best_profit", "seed_price"],
-            "custom_column_names": {} # ⚡ 新增：用于存储 {col_id: 自定义名称}
+            "custom_column_names": {},
+            "fertilizers": default_ferts # ⚡ 新增：肥料列表总线
         }
-        self.global_fert_order = ["入门催熟", "普通催熟", "优质催化", "入门增产", "普通增产"]
-        self.current_sort_col, self.current_sort_reverse = None, False
         
-        # 核心：存储宽度的字典
+        self.current_sort_col, self.current_sort_reverse = None, False
         self.runtime_col_widths = {}
         self.press_x = 0
         self.debug_logs = []
@@ -31,11 +39,89 @@ class FarmManagerApp(tk.Tk):
         
         self.notebook = ttk.Notebook(self)
         self.notebook.pack(fill='both', expand=True, padx=8, pady=8)
-        self.tab_report, self.tab_db, self.tab_settings = ttk.Frame(self.notebook), ttk.Frame(self.notebook), ttk.Frame(self.notebook)
+        self.tab_report = ttk.Frame(self.notebook)
+        self.tab_db = ttk.Frame(self.notebook)
+        self.tab_settings = ttk.Frame(self.notebook)
+        self.tab_fert = ttk.Frame(self.notebook) # ⚡ 新增：肥料实验室 Frame
+
         self.notebook.add(self.tab_report, text=' 📊 收益分析报表 ')
         self.notebook.add(self.tab_db, text=' 💾 核心数据库 ')
         self.notebook.add(self.tab_settings, text=' ⚙️ 参数设置 ')
+        self.notebook.add(self.tab_fert, text=' 🧪 肥料实验室 ') # ⚡ 新增：标签页
+        
+        # ⚡ 注意：肥料管理 UI 将在这里添加，但由于你只让我提供关键代码，
+        # UI 部分我会在你确认这三层逻辑没问题后再发给你，避免代码太长你粘错。
+        
         self.build_report_tab(); self.build_db_tab(); self.build_settings_tab()
+        self.build_fert_tab()
+
+    def rebuild_dynamic_columns(self):
+        """⚡ 核心！根据当前的 self.data['fertilizers'] 动态生成 config 配置"""
+        # 1. 重置 ALL_COLS
+        config.ALL_COLS = {
+            "type": "类型", "verified": "✅ 核对", "process_status": "🏭 加工能力",
+            "best_strategy": "🔥 最优策略", "best_profit": "💰 最高时薪"
+        }
+        for k, v in config.DB_KEY_MAP.items():
+            if k != "name": config.ALL_COLS[k] = f"{v}"
+
+        # 2. 动态构建 COLUMN_GROUPS
+        config.COLUMN_GROUPS = {}
+        config.FERT_COL_MAP = {}
+        
+        fert_names = ["无肥料"] + [f["name"] for f in self.data["fertilizers"]]
+        for f in fert_names:
+            if f != "无肥料": config.FERT_COL_MAP[f] = []
+            
+        for s in config.STRATS:
+            parent_key = f"{s}_无肥料"
+            config.ALL_COLS[parent_key] = f"{s}(无肥料)"
+            
+            children = []
+            for f in fert_names:
+                if f == "无肥料": continue
+                child_key = f"{s}_{f}"
+                children.append(child_key)
+                config.ALL_COLS[child_key] = f"↳ {f}"
+                config.FERT_COL_MAP[f].append(child_key)
+                
+            config.COLUMN_GROUPS[parent_key] = children
+            
+        # 3. 同步全局顺序
+        self.global_fert_order = [f["name"] for f in self.data["fertilizers"]]
+
+    def load_data(self):
+        if not os.path.exists(config.DATA_FILE): 
+            self.rebuild_dynamic_columns() # 哪怕没有存档，也要初始化列配置
+            return
+        try:
+            with open(config.DATA_FILE, 'r', encoding='utf-8') as f:
+                loaded = json.load(f)
+                self.data["settings"].update(loaded.get("settings", {}))
+                self.data["crops"] = loaded.get("crops", [])
+                for i, c in enumerate(self.data["crops"]): c.setdefault("_db_index", i)
+                self.runtime_col_widths = loaded.get("tksheet_widths", {}) 
+                self.data["display_columns"] = loaded.get("display_columns", self.data["display_columns"])
+                self.data["custom_column_names"] = loaded.get("custom_column_names", {})
+                # ⚡ 读取肥料
+                if "fertilizers" in loaded:
+                    self.data["fertilizers"] = loaded["fertilizers"]
+                
+                # ⚡ 读取完毕后，必须立刻重构动态列！
+                self.rebuild_dynamic_columns()
+        except Exception as e: 
+            print(f"[DEBUG] ❌ 加载失败: {e}")
+            self.rebuild_dynamic_columns() # 失败也要保底重构
+
+    def save_data(self):
+        try:
+            if hasattr(self, 'sheet'):
+                try: self.data["tksheet_widths"] = {c_id: self.sheet.column_width(i) for i, c_id in enumerate(self.data["display_columns"]) if i < self.sheet.total_columns()}
+                except: pass
+            save_dict = self.data.copy()
+            save_dict["crops"] = sorted(self.data["crops"], key=lambda x: x.get("_db_index", 0))
+            with open(config.DATA_FILE, 'w', encoding='utf-8') as f: json.dump(save_dict, f, ensure_ascii=False, indent=4)
+        except Exception as e: self.debug_print(f"[DEBUG] ❌ 保存失败: {e}")
 
     def setup_styles(self):
         style = ttk.Style(); style.theme_use("clam")
@@ -63,31 +149,6 @@ class FarmManagerApp(tk.Tk):
         for i, c in enumerate(self.data["crops"]): c["_db_index"] = i
         self.save_data(); self.reload_from_db(); self.debug_print("[DEBUG] 🛠️ 已重排")
 
-    def load_data(self):
-        if not os.path.exists(config.DATA_FILE): return
-        try:
-            with open(config.DATA_FILE, 'r', encoding='utf-8') as f:
-                loaded = json.load(f)
-                self.data["settings"].update(loaded.get("settings", {}))
-                self.data["crops"] = loaded.get("crops", [])
-                for i, c in enumerate(self.data["crops"]): c.setdefault("_db_index", i)
-                self.runtime_col_widths = loaded.get("tksheet_widths", {}) 
-                self.global_fert_order = loaded.get("fert_order", self.global_fert_order)
-                self.data["display_columns"] = loaded.get("display_columns", self.data["display_columns"])
-                self.data["custom_column_names"] = loaded.get("custom_column_names", {}) # ⚡ 加载持久化名称
-        except Exception as e: self.debug_print(f"[DEBUG] ❌ 加载失败: {e}")
-
-    def save_data(self):
-        try:
-            if hasattr(self, 'sheet'):
-                try: self.data["tksheet_widths"] = {c_id: self.sheet.column_width(i) for i, c_id in enumerate(self.data["display_columns"]) if i < self.sheet.total_columns()}
-                except: pass
-            save_dict = self.data.copy()
-            save_dict["crops"] = sorted(self.data["crops"], key=lambda x: x.get("_db_index", 0))
-            with open(config.DATA_FILE, 'w', encoding='utf-8') as f: json.dump(save_dict, f, ensure_ascii=False, indent=4)
-        except Exception as e: self.debug_print(f"[DEBUG] ❌ 保存失败: {e}")
-
-    
 
     def safe_right_click(self, event):
         c = self.sheet.identify_column(event); r = self.sheet.identify_row(event) if event.widget != self.sheet.CH else None
@@ -108,13 +169,14 @@ class FarmManagerApp(tk.Tk):
                 if col_id not in list(config.DB_KEY_MAP.keys()) + ["type", "process_status", "verified", "name"] or col_id == "best_profit":
                     n = self.sheet.get_cell_data(r, self.data["display_columns"].index("name")); strat = col_id
                     if col_id in ["best_profit", "best_strategy"]:
-                        P, _ = calc_profits(next((x for x in self.data["crops"] if x["name"] == n), None), self.data["settings"])
+                        # ⚡ 修复：在这里补上了第三个参数 self.data.get("fertilizers", [])
+                        P, _ = calc_profits(next((x for x in self.data["crops"] if x["name"] == n), None), self.data["settings"], self.data.get("fertilizers", []))
                         strat = max({k:v for k,v in P.items() if v is not None}, key=P.get) if P else None
                     if strat:
                         m.add_separator(); m.add_command(label="📊 全方案分析对比", command=lambda: self.show_details_popup(n))
                         m.add_command(label=f"🔢 查看 [{config.ALL_COLS.get(strat, strat).replace('↳ ', '')}] 计算公式", command=lambda: FormulaViewer.show(self, n, strat, self))
         m.post(event.x_root, event.y_root)
-
+        
     def rename_column(self, col_id):
         from tkinter import simpledialog
         # 获取当前名称，并将真实的换行符转回成 "\n" 字符方便用户编辑
@@ -175,7 +237,7 @@ class FarmManagerApp(tk.Tk):
         rows, red_coords, bold_coords = [], [], []
         for r_idx, c in enumerate(self.data["crops"]):
             try:
-                P, _ = calc_profits(c, self.data["settings"])
+                P, _ = calc_profits(c, self.data["settings"], self.data["fertilizers"])
                 rm = {"name": c.get("name"), "type": "果树" if c.get("is_tree") else "普通", "verified": "☑" if c.get('verified') else "☐"}
                 rm["process_status"] = f"{'●' if c.get('primary_type', '无') != '无' else '○'}{c.get('primary_type', '无')} {'●' if c.get('can_jam') else '○'}酱 {'●' if c.get('can_pickle') else '○'}菜"
                 for k in config.DB_KEY_MAP: 
@@ -249,7 +311,7 @@ class FarmManagerApp(tk.Tk):
         tv.heading("s", text=" 策略组合名称 "); tv.heading("p", text=" 预计时薪 ")
         tv.column("s", width=380, anchor="center"); tv.column("p", width=160, anchor="center")
         
-        P, F = calc_profits(c, self.data["settings"])
+        P, F = calc_profits(c, self.data["settings"], self.data["fertilizers"])
         data_list = sorted([{'s': k, 'p': v} for k, v in P.items() if v is not None], key=lambda x: x['p'], reverse=True)
         if data_list:
             mv = max(d['p'] for d in data_list)
@@ -311,7 +373,7 @@ class FarmManagerApp(tk.Tk):
             
             valid_crops, empty_crops = [], []
             for c in self.data["crops"]:
-                P, _ = calc_profits(c, self.data["settings"])
+                P, _ = calc_profits(c, self.data["settings"], self.data["fertilizers"])
                 val = c.get(col_id, None)
                 if col_id == "type": val = "果树" if c.get("is_tree") else "普通"
                 elif col_id == "verified": val = "☑" if c.get('verified') else "☐"
@@ -478,6 +540,104 @@ class FarmManagerApp(tk.Tk):
         
         # 去掉了原先在这里读取 fert_widths 并强行覆盖界面宽度的逻辑
         self.sheet.refresh()
+
+    # ================= 🧪 第四页：肥料实验室 =================
+
+    def build_fert_tab(self):
+        # 创建可编辑的表格
+        self.fert_sheet = Sheet(self.tab_fert, 
+                                align="center", header_align="center",
+                                valign="center", header_valign="center",
+                                theme="light blue",
+                                font=("微软雅黑", 10, "normal"),
+                                header_font=("微软雅黑", 10, "bold"),
+                                row_height=38, header_height=42)
+        
+        self.fert_sheet.set_options(table_font_vertical_alignment="center", header_font_vertical_alignment="center")
+        self.fert_sheet.pack(fill="both", expand=True, padx=8, pady=8)
+        
+        # ⚡ 启用双击编辑 (edit_cell) 和常规选择
+        self.fert_sheet.enable_bindings((
+            "single_select", "row_select", "column_width_resize",
+            "arrowkeys", "copy", "rc_select", "edit_cell" 
+        ))
+        
+        # 底部控制面板
+        bf = ttk.Frame(self.tab_fert); bf.pack(side='bottom', fill='x', pady=8, padx=8)
+        
+        ttk.Label(bf, text="💡 提示: 双击表格直接编辑。类型仅限填 speed(催熟) 或 yield(增产)。", 
+                  font=("微软雅黑", 9), foreground="#666666").pack(side='left')
+        
+        ttk.Button(bf, text="💾 保存并更新计算引擎", command=self.save_fert_changes).pack(side='right', padx=10)
+        ttk.Button(bf, text="❌ 删除选中行", command=self.delete_fert).pack(side='right')
+        ttk.Button(bf, text="➕ 研发新肥料", command=self.add_fert).pack(side='right', padx=10)
+        
+        self.refresh_fert_list()
+
+    def refresh_fert_list(self):
+        """刷新肥料实验室的表格数据"""
+        self.fert_sheet.headers(["肥料名称", "类型 (speed/yield)", "效果数值 (减时/倍率)", "每次消耗成本"])
+        data = []
+        for f in self.data["fertilizers"]:
+            data.append([f.get("name", ""), f.get("type", "speed"), f.get("effect", 0.0), f.get("cost", 0.0)])
+        self.fert_sheet.set_sheet_data(data)
+        self.fert_sheet.column_width(0, 150)
+        self.fert_sheet.column_width(1, 150)
+        self.fert_sheet.column_width(2, 180)
+        self.fert_sheet.column_width(3, 150)
+        self.fert_sheet.redraw()
+
+    def add_fert(self):
+        """添加一行新肥料"""
+        self.data["fertilizers"].append({"name": "新肥料", "type": "speed", "effect": 1.0, "cost": 10.0})
+        self.refresh_fert_list()
+        self.fert_sheet.see(len(self.data["fertilizers"]) - 1, 0) # 滚动到最底部
+
+    def delete_fert(self):
+        """删除选中的肥料"""
+        sel = self.fert_sheet.get_currently_selected()
+        if sel:
+            r = sel[0]
+            fert_name = self.data["fertilizers"][r]["name"]
+            if messagebox.askyesno("危险操作", f"确定要删除【{fert_name}】吗？\n所有与其相关的收益计算列都将消失！"):
+                del self.data["fertilizers"][r]
+                self.refresh_fert_list()
+
+    def save_fert_changes(self):
+        """提取表格里的最新数据，保存并重构整个系统"""
+        try:
+            raw_data = self.fert_sheet.get_sheet_data()
+            new_ferts = []
+            
+            for row in raw_data:
+                name = str(row[0]).strip()
+                ftype = str(row[1]).strip().lower()
+                if ftype not in ["speed", "yield"]:
+                    messagebox.showerror("格式错误", f"【{name}】的类型错误！\n只能填写 'speed' 或 'yield'。")
+                    return
+                effect = float(row[2])
+                cost = float(row[3])
+                new_ferts.append({"name": name, "type": ftype, "effect": effect, "cost": cost})
+            
+            # 1. 保存到数据总线
+            self.data["fertilizers"] = new_ferts
+            self.save_data()
+            
+            # 2. 核心：重新动态生成列配置字典
+            self.rebuild_dynamic_columns()
+            
+            # 3. 清理已经不存在的列 (防止删除了肥料，但报表里还留着死掉的列ID)
+            valid_cols = list(config.ALL_COLS.keys()) + list(config.DB_KEY_MAP.keys())
+            self.data["display_columns"] = [c for c in self.data["display_columns"] if c in valid_cols]
+            
+            # 4. 强制刷新收益报表 (让新的列和计算结果立即显示)
+            self.refresh_list(keep_widths=False)
+            
+            messagebox.showinfo("保存成功", "肥料配方已更新！\n收益分析报表中的算法公式已经全部自动重写。")
+        except ValueError:
+            messagebox.showerror("格式错误", "效果数值和成本必须是纯数字！")
+        except Exception as e:
+            messagebox.showerror("系统错误", f"保存失败: {e}")
 
 if __name__ == "__main__":
     app = FarmManagerApp()
