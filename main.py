@@ -54,9 +54,17 @@ class FarmManagerApp(tk.Tk):
     def reload_from_db(self):
         """从硬盘强制读取并刷新"""
         self.data_manager.debug_print("[DEBUG] 🔄 接收到刷新数据指令...")
+        
+        # ⬅️ 核心修复：备份当前的界面状态
         order = list(self.data_manager.data["display_columns"])
+        widths = self.data_manager.runtime_col_widths.copy() 
+        
         self.data_manager.load_data()
+        
+        # ⬅️ 核心修复：恢复界面状态，防止被硬盘里的旧数据覆盖
         self.data_manager.data["display_columns"] = order 
+        self.data_manager.runtime_col_widths = widths 
+        
         self.report_tab.current_sort_col = None
         self.report_tab.current_sort_reverse = False
         self.data_manager.data["crops"].sort(key=lambda x: x.get("_db_index", 0))

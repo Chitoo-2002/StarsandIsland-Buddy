@@ -307,7 +307,24 @@ class SettingsTab:
             tk.Label(f, text=l, bg="#f5f5f7", font=("微软雅黑", 9)).grid(row=i, column=0, sticky='e', pady=6)
             e = ttk.Entry(f, width=28); e.grid(row=i, column=1, padx=12, pady=6)
             e.insert(0, str(self.dm.data["settings"].get(k,""))); self.s_ents[k] = e
-        ttk.Button(f, text=" 💾 保存算法设置 ", command=self.save_settings).grid(row=20, column=1, pady=30, sticky='w')
+        
+        # 修改按钮栏，增加“打开路径”按钮
+        btn_frame = ttk.Frame(f)
+        btn_frame.grid(row=20, column=1, pady=30, sticky='w')
+        
+        ttk.Button(btn_frame, text=" 💾 保存算法设置 ", command=self.save_settings).pack(side='left')
+        ttk.Button(btn_frame, text=" 📂 打开存档路径 ", command=self.open_archive_path).pack(side='left', padx=10)
+
+    def open_archive_path(self):
+        """
+        ② 快速打开存档路径：调用系统资源管理器
+        """
+        import os
+        if os.path.exists(config.APP_DIR):
+            os.startfile(config.APP_DIR) # Windows 专用
+        else:
+            messagebox.showerror("错误", "存档文件夹尚未创建！")
+
 
     def save_settings(self):
         for k,e in self.s_ents.items(): self.dm.data["settings"][k]=float(e.get())
@@ -368,6 +385,8 @@ class FertilizerTab:
 class CompareTab:
     def __init__(self, parent, app, dm):
         self.app = app; self.dm = dm
+        self.pool_crops = [] # 🌟 核心：记录持久化的作物池名单
+
         ctrl_frame = ttk.Frame(parent); ctrl_frame.pack(fill='x', padx=10, pady=10)
         ttk.Label(ctrl_frame, text="1. 选择要评估的肥料:", font=("微软雅黑", 10, "bold")).pack(side='left', padx=(0, 5))
         self.cmp_fert_combo = ttk.Combobox(ctrl_frame, state="readonly", width=18, font=("微软雅黑", 10))
@@ -376,22 +395,61 @@ class CompareTab:
         ttk.Button(ctrl_frame, text="🚀 开始对比计算", command=self.run_comparison).pack(side='left', padx=30)
 
         body_frame = ttk.Frame(parent); body_frame.pack(fill='both', expand=True, padx=10, pady=5)
-        left_frame = ttk.LabelFrame(body_frame, text=" 2. 选择参选作物 (支持拖拽多选) "); left_frame.pack(side='left', fill='y', padx=(0, 10))
-        scroll_y = ttk.Scrollbar(left_frame); scroll_y.pack(side='right', fill='y')
-        self.cmp_crop_listbox = tk.Listbox(left_frame, selectmode=tk.EXTENDED, yscrollcommand=scroll_y.set, width=22, font=("微软雅黑", 11))
-        self.cmp_crop_listbox.pack(side='top', fill='both', expand=True, padx=8, pady=8); scroll_y.config(command=self.cmp_crop_listbox.yview)
         
-        btn_frame = ttk.Frame(left_frame); btn_frame.pack(fill='x', padx=8, pady=(0, 8))
-        ttk.Button(btn_frame, text="全选", command=lambda: self.cmp_crop_listbox.selection_set(0, tk.END)).pack(side='left', expand=True, fill='x', padx=2)
-        ttk.Button(btn_frame, text="反选", command=self.toggle_cmp_crops).pack(side='left', expand=True, fill='x', padx=2)
+        # --- 左侧：备选池 ---
+        left_frame = ttk.LabelFrame(body_frame, text=" 2. 备选作物池 "); left_frame.pack(side='left', fill='y', padx=(0, 5))
+        scroll_left = ttk.Scrollbar(left_frame); scroll_left.pack(side='right', fill='y')
+        self.lb_source = tk.Listbox(left_frame, selectmode=tk.EXTENDED, yscrollcommand=scroll_left.set, width=20, font=("微软雅黑", 11))
+        self.lb_source.pack(side='top', fill='both', expand=True, padx=5, pady=5); scroll_left.config(command=self.lb_source.yview)
+        
+        # --- 中间：控制按钮 ---
+        mid_frame = ttk.Frame(body_frame); mid_frame.pack(side='left', fill='y', padx=5)
+        tk.Label(mid_frame, text="").pack(expand=True) # 占位
+        ttk.Button(mid_frame, text="加入对比 >>", command=self.add_to_pool).pack(pady=5)
+        ttk.Button(mid_frame, text="<< 移出对比", command=self.remove_from_pool).pack(pady=5)
+        ttk.Button(mid_frame, text="清空池子 ×", command=self.clear_pool).pack(pady=20)
+        tk.Label(mid_frame, text="").pack(expand=True) # 占位
 
-        right_frame = ttk.LabelFrame(body_frame, text=" 3. 效益分析结果 (已自动按【时薪增量】降序排列) "); right_frame.pack(side='left', fill='both', expand=True)
-        self.cmp_sheet = Sheet(right_frame, align="center", header_align="center", valign="center", header_valign="center", theme="light blue", font=("微软雅黑", 10, "normal"), header_font=("微软雅黑", 10, "bold"), row_height=38, header_height=42)
+        # --- 右侧：目标池 ---
+        right_pool_frame = ttk.LabelFrame(body_frame, text=" 3. 已选对比池 "); right_pool_frame.pack(side='left', fill='y', padx=(5, 10))
+        scroll_right = ttk.Scrollbar(right_pool_frame); scroll_right.pack(side='right', fill='y')
+        self.lb_target = tk.Listbox(right_pool_frame, selectmode=tk.EXTENDED, yscrollcommand=scroll_right.set, width=20, font=("微软雅黑", 11), fg="#1a73e8")
+        self.lb_target.pack(side='top', fill='both', expand=True, padx=5, pady=5); scroll_right.config(command=self.lb_target.yview)
+
+        # --- 最右侧：结果表格 ---
+        result_frame = ttk.LabelFrame(body_frame, text=" 4. 效益分析结果 (按【时薪增量】降序) "); result_frame.pack(side='left', fill='both', expand=True)
+        self.cmp_sheet = Sheet(result_frame, align="center", header_align="center", valign="center", header_valign="center", theme="light blue", font=("微软雅黑", 10, "normal"), header_font=("微软雅黑", 10, "bold"), row_height=38, header_height=42)
         self.cmp_sheet.set_options(table_font_vertical_alignment="center", header_font_vertical_alignment="center")
         self.cmp_sheet.pack(fill='both', expand=True, padx=8, pady=8)
         self.cmp_sheet.enable_bindings(("single_select", "row_select", "column_width_resize", "arrowkeys", "copy"))
 
         self.refresh_cmp_ferts(); self.refresh_cmp_crops()
+
+        #拖拽列宽事件
+        self.cmp_sheet.extra_bindings("column_width_resize", self.exec_sync_width)
+    # 🌟 新增的池子控制函数
+    def add_to_pool(self):
+        sel = self.lb_source.curselection()
+        for i in sel:
+            crop = self.lb_source.get(i)
+            if crop not in self.pool_crops:
+                self.pool_crops.append(crop)
+        self.refresh_pool_ui()
+
+    def remove_from_pool(self):
+        sel = self.lb_target.curselection()
+        for i in reversed(sel): # 倒序删除防止索引错乱
+            del self.pool_crops[i]
+        self.refresh_pool_ui()
+
+    def clear_pool(self):
+        self.pool_crops.clear()
+        self.refresh_pool_ui()
+
+    def refresh_pool_ui(self):
+        self.lb_target.delete(0, tk.END)
+        for c in self.pool_crops:
+            self.lb_target.insert(tk.END, c)
 
     def refresh_cmp_ferts(self):
         ferts = [f["name"] for f in self.dm.data.get("fertilizers", [])]
@@ -399,23 +457,20 @@ class CompareTab:
         if ferts: self.cmp_fert_combo.current(0)
 
     def refresh_cmp_crops(self):
-        self.cmp_crop_listbox.delete(0, tk.END)
-        for c in self.dm.data.get("crops", []): self.cmp_crop_listbox.insert(tk.END, c.get("name", "未知作物"))
-
-    def toggle_cmp_crops(self):
-        for i in range(self.cmp_crop_listbox.size()):
-            if self.cmp_crop_listbox.selection_includes(i): self.cmp_crop_listbox.selection_clear(i)
-            else: self.cmp_crop_listbox.selection_set(i)
+        self.lb_source.delete(0, tk.END)
+        for c in self.dm.data.get("crops", []): 
+            self.lb_source.insert(tk.END, c.get("name", "未知作物"))
+        # 注意：这里不再清空 self.pool_crops 和 lb_target，保证名单持久化！
 
     def run_comparison(self):
         target_fert = self.cmp_fert_combo.get()
         if not target_fert: return messagebox.showwarning("提示", "请先选择一种肥料！")
-        selected_indices = self.cmp_crop_listbox.curselection()
-        if not selected_indices: return messagebox.showwarning("提示", "请至少在左侧选择一种作物！")
+        
+        # 🌟 核心：现在从 pool_crops 拿数据，而不是左侧列表
+        if not self.pool_crops: return messagebox.showwarning("提示", "请先将作物加入【已选对比池】！")
 
         results = []
-        for idx in selected_indices:
-            crop_name = self.cmp_crop_listbox.get(idx)
+        for crop_name in self.pool_crops:
             c = next((x for x in self.dm.data["crops"] if x.get("name") == crop_name), None)
             if not c: continue
             P, _ = calc_profits(c, self.dm.data["settings"], self.dm.data.get("fertilizers", []))
@@ -439,8 +494,13 @@ class CompareTab:
             diff_str = f"+{r['diff']:.2f}" if r['diff'] > 0 else f"{r['diff']:.2f}"
             sheet_data.append([rank, r["name"], r["base_strat"], f"{r['base_val']:.2f}", r["fert_strat"], f"{r['fert_val']:.2f}", diff_str])
         self.cmp_sheet.set_sheet_data(sheet_data)
-        widths = [60, 120, 120, 120, 140, 120, 160]
-        for i, w in enumerate(widths): self.cmp_sheet.column_width(i, w)
+
+        default_widths = [40, 60, 75, 75, 95, 75, 90] # 这里填入你刚才调好的最佳默认值！
+        saved_widths = self.dm.data.get("cmp_tksheet_widths", {})
+        for i, default_w in enumerate(default_widths):
+            # 如果存档里有记录，就用存档的宽度，否则用默认值
+            w = saved_widths.get(str(i), default_w) 
+            self.cmp_sheet.column_width(i, int(w))
         self.cmp_sheet.dehighlight_all()
         for i in range(len(results)):
             if results[i]["diff"] > 0:
@@ -448,3 +508,21 @@ class CompareTab:
                 else: self.cmp_sheet.highlight_cells(row=i, column=6, fg="#2e7d32")
             elif results[i]["diff"] < 0: self.cmp_sheet.highlight_cells(row=i, column=6, bg="#ffebee", fg="#c62828")
         self.cmp_sheet.redraw()
+
+    def exec_sync_width(self, event):
+        """对比页：拖拽列宽时自动保存到 JSON 存档"""
+        try:
+            if isinstance(event, dict) and 'resized' in event and event['resized'].get('columns', {}):
+                c_idx = list(event['resized']['columns'].keys())[0]
+                new_w = max(40, event['resized']['columns'][c_idx].get('new_size', 40))
+                
+                # 调整界面宽度
+                self.cmp_sheet.column_width(c_idx, width=new_w)
+                
+                # 存入 data 并触发保存
+                if "cmp_tksheet_widths" not in self.dm.data:
+                    self.dm.data["cmp_tksheet_widths"] = {}
+                self.dm.data["cmp_tksheet_widths"][str(c_idx)] = new_w
+                self.dm.save_data()
+        except Exception as e:
+            self.dm.debug_print(f"[DEBUG] ❌ 对比页列宽保存报错: {e}")

@@ -1,9 +1,28 @@
 import os
+import ctypes
+from ctypes import wintypes
+
+def get_windows_documents_path():
+    """调用系统 API 获取 Windows 真实的文档路径"""
+    # CSIDL_PERSONAL = 5 代表“我的文档”文件夹
+    CSIDL_PERSONAL = 5
+    SHGFP_TYPE_CURRENT = 0
+    
+    buf = ctypes.create_unicode_buffer(wintypes.MAX_PATH)
+    # 调用 SHGetFolderPathW
+    ctypes.windll.shell32.SHGetFolderPathW(None, CSIDL_PERSONAL, None, SHGFP_TYPE_CURRENT, buf)
+    return buf.value
 
 # --- 路径配置 ---
-DOCUMENTS_PATH = os.path.join(os.path.expanduser('~'), 'Documents')
+try:
+    # 尝试获取真实的文档路径
+    DOCUMENTS_PATH = get_windows_documents_path()
+except Exception:
+    # 如果是非 Windows 系统或获取失败，再退回到原来的逻辑作为保底
+    DOCUMENTS_PATH = os.path.join(os.path.expanduser('~'), 'Documents')
+
 APP_DIR = os.path.join(DOCUMENTS_PATH, 'FarmManagerData')
-DATA_FILE = os.path.join(APP_DIR, 'farm_data_pro.json')
+DATA_FILE = os.path.join(APP_DIR, '存档数据.json')
 
 if not os.path.exists(APP_DIR):
     os.makedirs(APP_DIR)

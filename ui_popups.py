@@ -117,22 +117,26 @@ class CropEditor:
             elif isinstance(v, ttk.Combobox): d[k]=v.get()
         if not d.get('name'): return
         crops = self.dm.data["crops"]
-        idx = -1
-        if not self.is_new:
-            idx = next((i for i,c in enumerate(crops) if c["name"]==self.crop_name), -1)
-            old_data = crops[idx]
-            diffs = [f"{k}: {old_data.get(k)} -> {v}" for k, v in d.items() if str(v) != str(old_data.get(k, ""))]
-            if diffs:
-                if not messagebox.askokcancel("确认", "确认变更？\n" + "\n".join(diffs[:8])): return
-        else:
+        if self.is_new:
+            # ⚡ 修复排序：给新作物一个最大的索引值，确保它排在最后
+            max_idx = max([c.get("_db_index", 0) for c in crops]) if crops else 0
+            d["_db_index"] = max_idx + 1
+            
+            # 检查重名并添加
             exist = next((c for c in crops if c["name"]==d['name']), None)
             if exist:
                 if not messagebox.askyesno("覆盖", "作物已存在，覆盖吗？"): return
                 idx = crops.index(exist)
-        if idx != -1: crops[idx] = d
-        else: crops.append(d)
-        
-        # 保存并让主程序刷新全部UI
+                d["_db_index"] = exist.get("_db_index", max_idx + 1) # 覆盖时保留原索引
+                crops[idx] = d
+            else:
+                crops.append(d)
+        else:
+            # 编辑现有作物逻辑
+            idx = next((i for i,c in enumerate(crops) if c["name"]==self.crop_name), -1)
+            d["_db_index"] = crops[idx].get("_db_index", idx) # 保持原索引
+            crops[idx] = d
+
         self.dm.save_data()
         self.app.refresh_all()
         self.win.destroy()
