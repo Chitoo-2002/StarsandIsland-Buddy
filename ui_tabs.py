@@ -421,7 +421,12 @@ class SettingsTab:
         
         ttk.Button(btn_frame, text=" 💾 保存算法设置 ", command=self.save_settings).pack(side='left')
         ttk.Button(btn_frame, text=" 📂 打开存档路径 ", command=self.open_archive_path).pack(side='left', padx=10)
-
+    
+    def refresh_settings_ui(self):
+        """刷新设置页面的输入框数值"""
+        for k, e in self.s_ents.items():
+            e.delete(0, tk.END)
+            e.insert(0, str(self.dm.data["settings"].get(k, "")))
     def open_archive_path(self):
         """
         ② 快速打开存档路径：调用系统资源管理器
@@ -481,13 +486,50 @@ class FertilizerTab:
                 new_ferts.append({"name": name, "type": ftype, "effect": effect, "cost": cost})
             self.dm.data["fertilizers"] = new_ferts
             self.dm.save_data()
+
+            # 1. 重新构建动态公式和分组信息
             self.dm.rebuild_dynamic_columns()
-            valid_cols = list(config.ALL_COLS.keys()) + list(config.DB_KEY_MAP.keys())
-            self.dm.data["display_columns"] = [c for c in self.dm.data["display_columns"] if c in valid_cols]
-            self.app.report_tab.refresh_list(keep_widths=False)
-            messagebox.showinfo("保存成功", "肥料配方已更新！\n收益分析报表中的算法公式已经全部自动重写。")
-        except ValueError: messagebox.showerror("格式错误", "效果数值和成本必须是纯数字！")
-        except Exception as e: messagebox.showerror("系统错误", f"保存失败: {e}")
+            
+            # 2. 定义当前合法的 ID 库
+            valid_ids = set(config.ALL_COLS.keys()) | set(config.DB_KEY_MAP.keys()) | \
+                        {"process_status", "best_profit", "best_strategy", "verified", "type"}
+            
+            old_disp = list(self.dm.data["display_columns"])
+            expanded_parents = set()
+            
+            # 3. 【核心修复 Step 1】记录哪些父级列当前正处于“展开”状态
+            # 逻辑：如果一个父级列后面跟着任何一个属于它的“孩子列”，就视为展开
+            for i, col_id in enumerate(old_disp):
+                if col_id in config.COLUMN_GROUPS:
+                    kids = config.COLUMN_GROUPS[col_id]
+                    if i + 1 < len(old_disp) and old_disp[i+1] in kids:
+                        expanded_parents.add(col_id)
+
+            # 4. 【核心修复 Step 2】获取当前所有合法的“孩子列”总表（用于彻底清算残留）
+            all_kids = set()
+            for kids_list in config.COLUMN_GROUPS.values():
+                all_kids.update(kids_list)
+
+            # 5. 【核心修复 Step 3】提取骨架：剔除所有孩子列和不再合法的旧列
+            skeleton = [c for c in old_disp if c not in all_kids and c in valid_ids]
+
+            # 6. 【核心修复 Step 4】根据骨架重建最终显示列表
+            new_disp = []
+            for col_id in skeleton:
+                new_disp.append(col_id)
+                # 如果这个父级列之前是展开的，现在把最新的“孩子们”塞进去
+                if col_id in expanded_parents:
+                    new_disp.extend(config.COLUMN_GROUPS[col_id])
+
+            # 7. 更新并刷新
+            self.dm.data["display_columns"] = new_disp
+            self.dm.save_data()
+            self.app.report_tab.refresh_list(keep_widths=True)
+            
+            messagebox.showinfo("成功", "肥料配方已更新！重复列残留已自动清理。")
+            
+        except Exception as e: 
+            messagebox.showerror("系统错误", f"同步失败: {e}")
 
 class CompareTab:
     def __init__(self, parent, app, dm):
@@ -524,7 +566,7 @@ class CompareTab:
         self.lb_target.pack(side='top', fill='both', expand=True, padx=5, pady=5); scroll_right.config(command=self.lb_target.yview)
 
         # --- 最右侧：结果表格 ---
-        result_frame = ttk.LabelFrame(body_frame, text=" 4. 效益分析结果 (按【时薪增量】降序) "); result_frame.pack(side='left', fill='both', expand=True)
+        result_frame = ttk.LabelFrame(body_frame, text=" 4. 效益分析结果"); result_frame.pack(side='left', fill='both', expand=True)
         self.cmp_sheet = Sheet(result_frame, align="center", header_align="center", valign="center", header_valign="center", theme="light blue", font=("微软雅黑", 10, "normal"), header_font=("微软雅黑", 10, "bold"), row_height=38, header_height=42)
         self.cmp_sheet.set_options(table_font_vertical_alignment="center", header_font_vertical_alignment="center")
         self.cmp_sheet.pack(fill='both', expand=True, padx=8, pady=8)

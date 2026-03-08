@@ -6,7 +6,7 @@ from ui_tabs import ReportTab, DatabaseTab, SettingsTab, FertilizerTab, CompareT
 class FarmManagerApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("星砂岛作物收益计算 V2.0 (重构版)")
+        self.title("星砂岛作物收益计算器 V1.1")
         self.geometry("1400x850")
         
         # 1. 启动数据大脑
@@ -50,25 +50,23 @@ class FarmManagerApp(tk.Tk):
         self.fert_tab.refresh_fert_list()
         self.compare_tab.refresh_cmp_ferts()
         self.compare_tab.refresh_cmp_crops()
-
+        
+        if hasattr(self, 'settings_tab'):
+            self.settings_tab.refresh_settings_ui()
     def reload_from_db(self):
-        """从硬盘强制读取并刷新"""
-        self.data_manager.debug_print("[DEBUG] 🔄 接收到刷新数据指令...")
+        """从硬盘执行全量强制刷新"""
+        self.data_manager.debug_print("[DEBUG] 🔄 正在执行系统全量刷新...")
         
-        # ⬅️ 核心修复：备份当前的界面状态
-        order = list(self.data_manager.data["display_columns"])
-        widths = self.data_manager.runtime_col_widths.copy() 
-        
+        # 直接加载，不再手动备份内存中的列宽，以硬盘存档为准
         self.data_manager.load_data()
         
-        # ⬅️ 核心修复：恢复界面状态，防止被硬盘里的旧数据覆盖
-        self.data_manager.data["display_columns"] = order 
-        self.data_manager.runtime_col_widths = widths 
-        
+        # 重置排序状态
         self.report_tab.current_sort_col = None
         self.report_tab.current_sort_reverse = False
-        self.data_manager.data["crops"].sort(key=lambda x: x.get("_db_index", 0))
+        
+        # 触发所有 UI 页面的重新绘制
         self.refresh_all()
+        
 
     def open_debug_window(self):
         w = tk.Toplevel(self); w.title("🐛 开发者调试控制台"); w.geometry("700x500")

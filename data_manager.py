@@ -56,19 +56,26 @@ class DataManager:
         try:
             with open(config.DATA_FILE, 'r', encoding='utf-8') as f:
                 loaded = json.load(f)
+                # 1. 刷新基础设置
                 self.data["settings"].update(loaded.get("settings", {}))
+                # 2. 刷新作物与索引
                 self.data["crops"] = loaded.get("crops", [])
-                for i, c in enumerate(self.data["crops"]): c.setdefault("_db_index", i)
+                for i, c in enumerate(self.data["crops"]): 
+                    c.setdefault("_db_index", i)
+                # 3. 核心：强制同步报表与对比页的列宽缓存
                 self.runtime_col_widths = loaded.get("tksheet_widths", {}) 
+                self.data["cmp_tksheet_widths"] = loaded.get("cmp_tksheet_widths", {})
+                # 4. 刷新列顺序与自定义名称
                 self.data["display_columns"] = loaded.get("display_columns", self.data["display_columns"])
                 self.data["custom_column_names"] = loaded.get("custom_column_names", {})
-                self.data["cmp_tksheet_widths"] = loaded.get("cmp_tksheet_widths", {})
+                # 5. 刷新肥料数据
                 if "fertilizers" in loaded:
-                    self.data["fertilizers"] = loaded["fertilizers"]
+                    self.data["fertilizers"] = loaded["fertilizers"]                
                 self.rebuild_dynamic_columns()
+                valid_ids = set(config.ALL_COLS.keys()) | set(config.DB_KEY_MAP.keys()) | {"process_status", "best_profit", "best_strategy", "verified", "type"}
+                self.data["display_columns"] = [c for c in self.data["display_columns"] if c in valid_ids]
         except Exception as e: 
             self.debug_print(f"[DEBUG] ❌ 加载失败: {e}")
-            self.rebuild_dynamic_columns()
 
     def save_data(self, report_sheet=None):
         try:
