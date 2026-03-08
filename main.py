@@ -43,8 +43,10 @@ class FarmManagerApp(tk.Tk):
         self.tab_db = ttk.Frame(self.notebook)
         self.tab_settings = ttk.Frame(self.notebook)
         self.tab_fert = ttk.Frame(self.notebook) # ⚡ 新增：肥料实验室 Frame
+        self.tab_compare = ttk.Frame(self.notebook) # ⚡ 新增：对比页面 Frame
 
         self.notebook.add(self.tab_report, text=' 📊 收益分析报表 ')
+        self.notebook.add(self.tab_compare, text=' ⚖️ 施肥效益对比 ') # ⚡ 新增：建议放在报表旁边
         self.notebook.add(self.tab_db, text=' 💾 核心数据库 ')
         self.notebook.add(self.tab_settings, text=' ⚙️ 参数设置 ')
         self.notebook.add(self.tab_fert, text=' 🧪 肥料实验室 ') # ⚡ 新增：标签页
@@ -52,7 +54,7 @@ class FarmManagerApp(tk.Tk):
         # ⚡ 注意：肥料管理 UI 将在这里添加，但由于你只让我提供关键代码，
         # UI 部分我会在你确认这三层逻辑没问题后再发给你，避免代码太长你粘错。
         
-        self.build_report_tab(); self.build_db_tab(); self.build_settings_tab()
+        self.build_report_tab(); self.build_compare_tab(); self.build_db_tab(); self.build_settings_tab()
         self.build_fert_tab()
 
     def rebuild_dynamic_columns(self):
@@ -452,7 +454,14 @@ class FarmManagerApp(tk.Tk):
                 self.data["crops"] = [x for x in self.data["crops"] if x.get("name") != n]
                 self.save_data(); self.refresh_all()
 
-    def refresh_all(self): self.refresh_list(keep_widths=True); self.refresh_db()
+    def refresh_all(self): 
+        self.refresh_list(keep_widths=True)
+        self.refresh_db()
+        self.refresh_fert_list() # 如果你有这个函数的话
+        # ⚡ 加上这两句，保证对比页面的选项始终是最新的
+        if hasattr(self, 'refresh_cmp_ferts'):
+            self.refresh_cmp_ferts()
+            self.refresh_cmp_crops()
 
     def build_db_tab(self):
         self.db_sheet = Sheet(self.tab_db, align="center", header_align="center", theme="light blue", font=("微软雅黑", 10, "normal"), header_font=("微软雅黑", 10, "bold"), row_height=28, header_height=32)
@@ -573,6 +582,142 @@ class FarmManagerApp(tk.Tk):
         ttk.Button(bf, text="➕ 研发新肥料", command=self.add_fert).pack(side='right', padx=10)
         
         self.refresh_fert_list()
+
+    # ================= ⚖️ 第五页：施肥效益对比 =================
+
+    def build_compare_tab(self):
+        # 顶部控制栏
+        ctrl_frame = ttk.Frame(self.tab_compare)
+        ctrl_frame.pack(fill='x', padx=10, pady=10)
+
+        ttk.Label(ctrl_frame, text="1. 选择要评估的肥料:", font=("微软雅黑", 10, "bold")).pack(side='left', padx=(0, 5))
+        self.cmp_fert_combo = ttk.Combobox(ctrl_frame, state="readonly", width=18, font=("微软雅黑", 10))
+        self.cmp_fert_combo.pack(side='left', padx=5)
+        
+        ttk.Button(ctrl_frame, text="🔄 刷新肥料列表", command=self.refresh_cmp_ferts).pack(side='left', padx=5)
+        ttk.Button(ctrl_frame, text="🚀 开始对比计算", command=self.run_comparison).pack(side='left', padx=30)
+
+        # 主体分栏：左侧选作物，右侧看结果
+        body_frame = ttk.Frame(self.tab_compare)
+        body_frame.pack(fill='both', expand=True, padx=10, pady=5)
+
+        # 左侧：作物选择区
+        left_frame = ttk.LabelFrame(body_frame, text=" 2. 选择参选作物 (支持拖拽多选) ")
+        left_frame.pack(side='left', fill='y', padx=(0, 10))
+
+        scroll_y = ttk.Scrollbar(left_frame)
+        scroll_y.pack(side='right', fill='y')
+
+        self.cmp_crop_listbox = tk.Listbox(left_frame, selectmode=tk.EXTENDED, yscrollcommand=scroll_y.set, width=22, font=("微软雅黑", 11))
+        self.cmp_crop_listbox.pack(side='top', fill='both', expand=True, padx=8, pady=8)
+        scroll_y.config(command=self.cmp_crop_listbox.yview)
+
+        btn_frame = ttk.Frame(left_frame)
+        btn_frame.pack(fill='x', padx=8, pady=(0, 8))
+        ttk.Button(btn_frame, text="全选", command=lambda: self.cmp_crop_listbox.selection_set(0, tk.END)).pack(side='left', expand=True, fill='x', padx=2)
+        ttk.Button(btn_frame, text="反选", command=self.toggle_cmp_crops).pack(side='left', expand=True, fill='x', padx=2)
+
+        # 右侧：分析结果表格
+        right_frame = ttk.LabelFrame(body_frame, text=" 3. 效益分析结果 (已自动按【时薪增量】降序排列) ")
+        right_frame.pack(side='left', fill='both', expand=True)
+
+        self.cmp_sheet = Sheet(right_frame, align="center", header_align="center", valign="center", header_valign="center",
+                               theme="light blue", font=("微软雅黑", 10, "normal"), header_font=("微软雅黑", 10, "bold"),
+                               row_height=38, header_height=42)
+        self.cmp_sheet.set_options(table_font_vertical_alignment="center", header_font_vertical_alignment="center")
+        self.cmp_sheet.pack(fill='both', expand=True, padx=8, pady=8)
+        self.cmp_sheet.enable_bindings(("single_select", "row_select", "column_width_resize", "arrowkeys", "copy"))
+
+        # 初始化数据
+        self.refresh_cmp_ferts()
+        self.refresh_cmp_crops()
+
+    def refresh_cmp_ferts(self):
+        ferts = [f["name"] for f in self.data.get("fertilizers", [])]
+        self.cmp_fert_combo['values'] = ferts
+        if ferts: self.cmp_fert_combo.current(0)
+
+    def refresh_cmp_crops(self):
+        self.cmp_crop_listbox.delete(0, tk.END)
+        for c in self.data.get("crops", []):
+            self.cmp_crop_listbox.insert(tk.END, c.get("name", "未知作物"))
+
+    def toggle_cmp_crops(self):
+        for i in range(self.cmp_crop_listbox.size()):
+            if self.cmp_crop_listbox.selection_includes(i): self.cmp_crop_listbox.selection_clear(i)
+            else: self.cmp_crop_listbox.selection_set(i)
+
+    def run_comparison(self):
+        target_fert = self.cmp_fert_combo.get()
+        if not target_fert: return messagebox.showwarning("提示", "请先选择一种肥料！")
+        
+        selected_indices = self.cmp_crop_listbox.curselection()
+        if not selected_indices: return messagebox.showwarning("提示", "请至少在左侧选择一种作物！")
+
+        results = []
+        for idx in selected_indices:
+            crop_name = self.cmp_crop_listbox.get(idx)
+            c = next((x for x in self.data["crops"] if x.get("name") == crop_name), None)
+            if not c: continue
+
+            # 调用引擎：同时计算该作物的所有可能情况
+            P, _ = calc_profits(c, self.data["settings"], self.data.get("fertilizers", []))
+
+            # 1. 找出【无肥料】状态下的最强策略和时薪
+            no_fert_keys = {k: v for k, v in P.items() if "无肥料" in k and v is not None}
+            best_no_fert_k = max(no_fert_keys, key=no_fert_keys.get) if no_fert_keys else "无"
+            best_no_fert_v = no_fert_keys.get(best_no_fert_k, 0)
+
+            # 2. 找出施加【目标肥料】状态下的最强策略和时薪
+            tgt_fert_keys = {k: v for k, v in P.items() if target_fert in k and v is not None}
+            best_tgt_fert_k = max(tgt_fert_keys, key=tgt_fert_keys.get) if tgt_fert_keys else "无"
+            best_tgt_fert_v = tgt_fert_keys.get(best_tgt_fert_k, 0)
+
+            # 3. 计算边际时薪增量
+            diff = best_tgt_fert_v - best_no_fert_v
+
+            results.append({
+                "name": crop_name,
+                "base_strat": best_no_fert_k.replace("_无肥料", ""),
+                "base_val": best_no_fert_v,
+                "fert_strat": best_tgt_fert_k.replace(f"_{target_fert}", ""),
+                "fert_val": best_tgt_fert_v,
+                "diff": diff
+            })
+
+        # 按时薪增量从高到低排序 (核心逻辑)
+        results.sort(key=lambda x: x["diff"], reverse=True)
+
+        # 渲染表格
+        headers = ["排名", "作物名称", "原最优流派", "原最高时薪", f"施肥后最优流派", "施肥后时薪", "🔥 绝对时薪增量"]
+        self.cmp_sheet.headers(headers)
+
+        sheet_data = []
+        for i, r in enumerate(results):
+            rank = f"Top {i+1}" if i < 3 else str(i+1)
+            diff_str = f"+{r['diff']:.2f}" if r['diff'] > 0 else f"{r['diff']:.2f}"
+            sheet_data.append([
+                rank, r["name"], r["base_strat"], f"{r['base_val']:.2f}", 
+                r["fert_strat"], f"{r['fert_val']:.2f}", diff_str
+            ])
+
+        self.cmp_sheet.set_sheet_data(sheet_data)
+        
+        # 美化列宽
+        widths = [60, 120, 120, 120, 140, 120, 160]
+        for i, w in enumerate(widths): self.cmp_sheet.column_width(i, w)
+
+        # 颜色高亮：前三名且赚钱的标绿，亏钱的标红警示
+        self.cmp_sheet.dehighlight_all()
+        for i in range(len(results)):
+            if results[i]["diff"] > 0:
+                if i < 3: self.cmp_sheet.highlight_cells(row=i, column=6, bg="#e8f5e9", fg="#2e7d32") # 绿色 (大赚)
+                else: self.cmp_sheet.highlight_cells(row=i, column=6, fg="#2e7d32")
+            elif results[i]["diff"] < 0:
+                self.cmp_sheet.highlight_cells(row=i, column=6, bg="#ffebee", fg="#c62828") # 红色 (亏本)
+
+        self.cmp_sheet.redraw()
+
 
     def refresh_fert_list(self):
         """刷新肥料实验室的表格数据"""
