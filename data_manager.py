@@ -62,6 +62,7 @@ class DataManager:
                 self.runtime_col_widths = loaded.get("tksheet_widths", {}) 
                 self.data["display_columns"] = loaded.get("display_columns", self.data["display_columns"])
                 self.data["custom_column_names"] = loaded.get("custom_column_names", {})
+                self.data["cmp_tksheet_widths"] = loaded.get("cmp_tksheet_widths", {})
                 if "fertilizers" in loaded:
                     self.data["fertilizers"] = loaded["fertilizers"]
                 self.rebuild_dynamic_columns()

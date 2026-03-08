@@ -5,6 +5,52 @@ import config
 from logic import calc_profits
 from ui_popups import CropEditor, ColumnManager, FormulaViewer, set_popup_geo
 
+# 将这个函数直接放在 ui_tabs.py 的顶部（类定义的外面）
+def analyze_expansion_opportunity(crop_data, fert_name, current_strategy_hourly, current_strategy_key, P_dict, F_dict, fertilizers_list):
+    """
+    统一复用的核心算法：计算“等价扩种时薪”与“扩种单次纯收益”
+    自动判断：如果支持一级加工且有收益，优先用一级加工计算扩种，否则用直售。
+    """
+    def get_time(formula_dict):
+        try:
+            safe_expr = formula_dict['val_d'].replace('×', '*').replace('÷', '/')
+            return max(float(eval(safe_expr)), 0.1)
+        except:
+            return 1.0
+
+    # 🌟 智能选择扩种基准：优先找一级加工
+    base_exp_key = "一级加工_无肥料"
+    if base_exp_key not in P_dict or P_dict[base_exp_key] is None or P_dict[base_exp_key] <= 0:
+        base_exp_key = "直接出售_无肥料"
+        
+    base_exp_hourly = P_dict.get(base_exp_key, 0)
+    base_exp_time = get_time(F_dict[base_exp_key]) if base_exp_key in F_dict else 1.0
+    base_exp_single_net = base_exp_hourly * base_exp_time # 基准单次纯收益
+
+    # 计算当前所选方案的单次纯收益
+    current_time = get_time(F_dict[current_strategy_key]) if current_strategy_key in F_dict else 1.0
+    current_single_net = current_strategy_hourly * current_time
+
+    seed_price = float(crop_data.get("seed_price", 0) or 0)
+    fert_cost = 0
+    if fert_name != "无肥料":
+        fert_obj = next((f for f in fertilizers_list if f["name"] == fert_name), None)
+        if fert_obj: fert_cost = float(fert_obj.get("cost", 0))
+
+    alt_hourly = 0
+    alt_diff = 0
+    alt_single_net = 0
+    extra_seeds = 0  # 👈 新加这行
+
+    if seed_price > 0 and fert_cost > 0:
+        extra_seeds = fert_cost / seed_price
+        alt_hourly = base_exp_hourly * (1 + extra_seeds)
+        alt_diff = alt_hourly - current_strategy_hourly # 扩种时薪减去当前施肥方案时薪
+        alt_single_net = base_exp_single_net * (1 + extra_seeds) # 扩种后的单次总利润
+
+    return alt_hourly, alt_diff, current_single_net, alt_single_net, base_exp_key, extra_seeds
+
+
 class ReportTab:
     def __init__(self, parent, app, dm):
         self.app = app
@@ -228,23 +274,84 @@ class ReportTab:
             self.dm.save_data(self.sheet); self.app.db_tab.refresh_db(); messagebox.showinfo("成功", "排序已成功永久保存到数据库！")
 
     def show_details(self, c):
-        w = tk.Toplevel(self.app); w.title(f"收益分析: {c['name']}"); set_popup_geo(w, 720, 780); w.configure(bg="white")
-        tk.Label(w, text=f"作物: {c['name']} 方案时薪对比", font=("微软雅黑", 14, "bold"), bg="white", pady=18).pack()
-        con = tk.Frame(w, bg="white"); con.pack(fill='both', expand=True, padx=25, pady=10)
-        tv = ttk.Treeview(con, columns=("s", "p"), show="headings", height=16); tv.pack(side='left', fill='both', expand=True)
+        w = tk.Toplevel(self.app); w.title(f"收益分析: {c['name']}")
+        set_popup_geo(w, 1080, 780); w.configure(bg="white")
+        
+        seed_price = float(c.get("seed_price", 0) or 0)
+        
+        header_frame = tk.Frame(w, bg="white")
+        header_frame.pack(pady=15)
+        tk.Label(header_frame, text=f"作物: {c['name']} 方案全景分析", font=("微软雅黑", 14, "bold"), bg="white").pack()
+        tk.Label(header_frame, text=f"种子价格: {seed_price} 金币", font=("微软雅黑", 10), fg="#888", bg="white").pack()
+
+        con = tk.Frame(w, bg="white"); con.pack(fill='both', expand=True, padx=20, pady=10)
+        
+        # 🌟 更新列名，加入单次收益对比
+        cols = ("s", "p", "np", "alt", "altd", "alt_net", "plots")
+        tv = ttk.Treeview(con, columns=cols, show="headings", height=16)
+        tv.pack(side='left', fill='both', expand=True)
         sc = ttk.Scrollbar(con, command=tv.yview); sc.pack(side='right', fill='y'); tv.config(yscrollcommand=sc.set)
-        tv.heading("s", text=" 策略组合名称 "); tv.heading("p", text=" 预计时薪 ")
-        tv.column("s", width=380, anchor="center"); tv.column("p", width=160, anchor="center")
-        P, F = calc_profits(c, self.dm.data["settings"], self.dm.data["fertilizers"])
-        data_list = sorted([{'s': k, 'p': v} for k, v in P.items() if v is not None], key=lambda x: x['p'], reverse=True)
+        
+        tv.heading("s", text="策略组合名称")
+        tv.heading("p", text="预计时薪")
+        tv.heading("np", text="💰当前单次收益")
+        tv.heading("alt", text="🌱扩种等价时薪")
+        tv.heading("altd", text="📈扩种时薪增量")
+        tv.heading("alt_net", text="🌾扩种单次收益")
+        tv.heading("plots", text="🔲 扩种地块数")
+
+        tv.column("s", width=200, anchor="center"); tv.column("p", width=90, anchor="center")
+        tv.column("np", width=120, anchor="center"); tv.column("alt", width=130, anchor="center")
+        tv.column("altd", width=130, anchor="center"); tv.column("alt_net", width=130, anchor="center")
+        tv.column("plots", width=100, anchor="center")
+        P, F = calc_profits(c, self.dm.data["settings"], self.dm.data.get("fertilizers", []))
+        
+        data_list = []
+        for k, v in P.items():
+            if v is None: continue
+            
+            fert_name = k.split('_')[1] if '_' in k and len(k.split('_')) > 1 else "无肥料"
+            
+            
+            alt_hourly, alt_diff, curr_net, alt_net, base_exp_key, extra_seeds = analyze_expansion_opportunity(
+                c, fert_name, v, k, P, F, self.dm.data.get("fertilizers", [])
+            )
+                
+            data_list.append({
+                's': k, 'p': v, 'np': curr_net, 
+                'alt': alt_hourly, 'altd': alt_diff, 'alt_net': alt_net, 
+                'plots': extra_seeds 
+            })
+
+        data_list = sorted(data_list, key=lambda x: x['p'], reverse=True)
+        
         if data_list:
             mv = max(d['p'] for d in data_list)
             for item in data_list:
-                tv.insert("", "end", values=(item['s'], f"{item['p']:.2f}"), tags=('max' if item['p'] == mv else ('min' if item['p'] < 0 else 'norm'),))
-        tv.tag_configure('max', foreground='#1a73e8', font=('微软雅黑', 10, 'bold')); tv.tag_configure('min', foreground='#d93025')
+                # 格式化渲染
+                alt_str = f"🔹 {item['alt']:.2f}" if item['alt'] > 0 else "-"
+                alt_net_str = f"🔹 {item['alt_net']:.2f}" if item['alt_net'] > 0 else "-"
+                
+                if item['altd'] > 0: altd_str = f"🔹 +{item['altd']:.2f}"
+                elif item['altd'] < 0: altd_str = f"🔹 {item['altd']:.2f}"
+                else: altd_str = "-"
+                
+                
+                plots_str = f"🔹 +{item['plots']:.2f}" if item['plots'] > 0 else "-"
+                
+                tags = ('max' if item['p'] == mv else ('min' if item['p'] < 0 else 'norm'),)
+                tv.insert("", "end", values=(
+                    item['s'], f"{item['p']:.2f}", f"{item['np']:.2f}", 
+                    alt_str, altd_str, alt_net_str, plots_str 
+                ), tags=tags)
+                
+        tv.tag_configure('max', foreground='#1a73e8', font=('微软雅黑', 10, 'bold'))
+        tv.tag_configure('min', foreground='#d93025')
+        
         def dbl_f(e):
             sel = tv.selection()
-            if sel and tv.item(sel[0])['values'][0] in F: FormulaViewer.render(w, c['name'], tv.item(sel[0])['values'][0], F[tv.item(sel[0])['values'][0]])
+            if sel and tv.item(sel[0])['values'][0] in F: 
+                FormulaViewer.render(w, c['name'], tv.item(sel[0])['values'][0], F[tv.item(sel[0])['values'][0]])
         tv.bind("<Double-1>", dbl_f)
 
     def show_details_popup(self, n):
@@ -404,11 +511,11 @@ class CompareTab:
         
         # --- 中间：控制按钮 ---
         mid_frame = ttk.Frame(body_frame); mid_frame.pack(side='left', fill='y', padx=5)
-        tk.Label(mid_frame, text="").pack(expand=True) # 占位
+        tk.Label(mid_frame, text="").pack(expand=True) 
         ttk.Button(mid_frame, text="加入对比 >>", command=self.add_to_pool).pack(pady=5)
         ttk.Button(mid_frame, text="<< 移出对比", command=self.remove_from_pool).pack(pady=5)
         ttk.Button(mid_frame, text="清空池子 ×", command=self.clear_pool).pack(pady=20)
-        tk.Label(mid_frame, text="").pack(expand=True) # 占位
+        tk.Label(mid_frame, text="").pack(expand=True) 
 
         # --- 右侧：目标池 ---
         right_pool_frame = ttk.LabelFrame(body_frame, text=" 3. 已选对比池 "); right_pool_frame.pack(side='left', fill='y', padx=(5, 10))
@@ -421,13 +528,29 @@ class CompareTab:
         self.cmp_sheet = Sheet(result_frame, align="center", header_align="center", valign="center", header_valign="center", theme="light blue", font=("微软雅黑", 10, "normal"), header_font=("微软雅黑", 10, "bold"), row_height=38, header_height=42)
         self.cmp_sheet.set_options(table_font_vertical_alignment="center", header_font_vertical_alignment="center")
         self.cmp_sheet.pack(fill='both', expand=True, padx=8, pady=8)
-        self.cmp_sheet.enable_bindings(("single_select", "row_select", "column_width_resize", "arrowkeys", "copy"))
+        self.cmp_sheet.enable_bindings("single_select", "row_select", "column_width_resize", "arrowkeys", "copy")
+
+        # 🌟 丢失的代码找回：绑定拖拽列宽事件
+        self.cmp_sheet.extra_bindings("column_width_resize", self.exec_sync_width)
 
         self.refresh_cmp_ferts(); self.refresh_cmp_crops()
 
-        #拖拽列宽事件
-        self.cmp_sheet.extra_bindings("column_width_resize", self.exec_sync_width)
-    # 🌟 新增的池子控制函数
+    # 🌟 丢失的代码找回：实时保存列宽的函数
+    def exec_sync_width(self, event):
+        try:
+            if isinstance(event, dict) and 'resized' in event and event['resized'].get('columns', {}):
+                c_idx = list(event['resized']['columns'].keys())[0]
+                new_w = max(40, event['resized']['columns'][c_idx].get('new_size', 40))
+                self.cmp_sheet.column_width(c_idx, width=new_w)
+                
+                if "cmp_tksheet_widths" not in self.dm.data:
+                    self.dm.data["cmp_tksheet_widths"] = {}
+                self.dm.data["cmp_tksheet_widths"][str(c_idx)] = new_w
+                self.dm.save_data()
+        except Exception as e:
+            self.dm.debug_print(f"[DEBUG] ❌ 对比页列宽保存报错: {e}")
+
+    # ===== 以下为池子模式及计算逻辑 =====
     def add_to_pool(self):
         sel = self.lb_source.curselection()
         for i in sel:
@@ -438,7 +561,7 @@ class CompareTab:
 
     def remove_from_pool(self):
         sel = self.lb_target.curselection()
-        for i in reversed(sel): # 倒序删除防止索引错乱
+        for i in reversed(sel): 
             del self.pool_crops[i]
         self.refresh_pool_ui()
 
@@ -460,69 +583,99 @@ class CompareTab:
         self.lb_source.delete(0, tk.END)
         for c in self.dm.data.get("crops", []): 
             self.lb_source.insert(tk.END, c.get("name", "未知作物"))
-        # 注意：这里不再清空 self.pool_crops 和 lb_target，保证名单持久化！
 
     def run_comparison(self):
         target_fert = self.cmp_fert_combo.get()
         if not target_fert: return messagebox.showwarning("提示", "请先选择一种肥料！")
-        
-        # 🌟 核心：现在从 pool_crops 拿数据，而不是左侧列表
-        if not self.pool_crops: return messagebox.showwarning("提示", "请先将作物加入【已选对比池】！")
+        if not hasattr(self, 'pool_crops') or not self.pool_crops: 
+            return messagebox.showwarning("提示", "请先将作物加入【已选对比池】！")
 
         results = []
         for crop_name in self.pool_crops:
             c = next((x for x in self.dm.data["crops"] if x.get("name") == crop_name), None)
             if not c: continue
-            P, _ = calc_profits(c, self.dm.data["settings"], self.dm.data.get("fertilizers", []))
+            
+            P, F = calc_profits(c, self.dm.data["settings"], self.dm.data.get("fertilizers", []))
+            
             no_fert_keys = {k: v for k, v in P.items() if "无肥料" in k and v is not None}
             best_no_fert_k = max(no_fert_keys, key=no_fert_keys.get) if no_fert_keys else "无"
             best_no_fert_v = no_fert_keys.get(best_no_fert_k, 0)
+            
             tgt_fert_keys = {k: v for k, v in P.items() if target_fert in k and v is not None}
             best_tgt_fert_k = max(tgt_fert_keys, key=tgt_fert_keys.get) if tgt_fert_keys else "无"
             best_tgt_fert_v = tgt_fert_keys.get(best_tgt_fert_k, 0)
+            
             diff = best_tgt_fert_v - best_no_fert_v
+            
+            
+            alt_hourly, alt_diff, curr_net, alt_net, base_exp_key, extra_seeds = analyze_expansion_opportunity(
+                c, target_fert, best_tgt_fert_v, best_tgt_fert_k, P, F, self.dm.data.get("fertilizers", [])
+            )
+                
             results.append({
-                "name": crop_name, "base_strat": best_no_fert_k.replace("_无肥料", ""), "base_val": best_no_fert_v,
-                "fert_strat": best_tgt_fert_k.replace(f"_{target_fert}", ""), "fert_val": best_tgt_fert_v, "diff": diff
+                "name": crop_name, 
+                "base_strat": best_no_fert_k.replace("_无肥料", ""), "base_val": best_no_fert_v,
+                "fert_val": best_tgt_fert_v, "curr_net": curr_net,
+                "diff": diff, "alt_hourly": alt_hourly, "alt_diff": alt_diff, "alt_net": alt_net,
+                "plots": extra_seeds 
             })
+            
         results.sort(key=lambda x: x["diff"], reverse=True)
-        headers = ["排名", "作物名称", "原最优流派", "原最高时薪", f"施肥后最优流派", "施肥后时薪", "🔥 绝对时薪增量"]
+        
+        # 🌟 移除了“施肥后最优流派”，加入了两列“单次收益”
+        headers = ["排名", "作物名称", "原最优流派", "原最高时薪", "施肥后时薪", "🔥 施肥时薪增量", "💰 施肥单次收益", "🔲 扩种地块数", "🌱 扩种等价时薪", "📈 扩种时薪增量", "🌾 扩种单次收益"]
         self.cmp_sheet.headers(headers)
+        
         sheet_data = []
         for i, r in enumerate(results):
             rank = f"Top {i+1}" if i < 3 else str(i+1)
             diff_str = f"+{r['diff']:.2f}" if r['diff'] > 0 else f"{r['diff']:.2f}"
-            sheet_data.append([rank, r["name"], r["base_strat"], f"{r['base_val']:.2f}", r["fert_strat"], f"{r['fert_val']:.2f}", diff_str])
+            alt_h_str = f"{r['alt_hourly']:.2f}" if r['alt_hourly'] > 0 else "-"
+            alt_n_str = f"{r['alt_net']:.2f}" if r['alt_net'] > 0 else "-"
+            
+            if r['alt_diff'] > 0: alt_d_str = f"+{r['alt_diff']:.2f}"
+            elif r['alt_diff'] < 0: alt_d_str = f"{r['alt_diff']:.2f}"
+            else: alt_d_str = "-"
+            
+            plots_str = f"+{r['plots']:.2f}" if r['plots'] > 0 else "-"
+            
+            sheet_data.append([
+                rank, r["name"], r["base_strat"], f"{r['base_val']:.2f}", 
+                f"{r['fert_val']:.2f}", diff_str, f"{r['curr_net']:.2f}",
+                plots_str, 
+                alt_h_str, alt_d_str, alt_n_str
+            ])
+            
         self.cmp_sheet.set_sheet_data(sheet_data)
-
-        default_widths = [40, 60, 75, 75, 95, 75, 90] # 这里填入你刚才调好的最佳默认值！
+        
+        # 新增列后的默认宽度调整
+        default_widths = [60, 100, 100, 100, 100, 130, 130, 100, 140, 140, 140]
         saved_widths = self.dm.data.get("cmp_tksheet_widths", {})
         for i, default_w in enumerate(default_widths):
-            # 如果存档里有记录，就用存档的宽度，否则用默认值
             w = saved_widths.get(str(i), default_w) 
             self.cmp_sheet.column_width(i, int(w))
+            
         self.cmp_sheet.dehighlight_all()
         for i in range(len(results)):
+            # 常规红绿高亮 (diff 现处于索引 5)
             if results[i]["diff"] > 0:
-                if i < 3: self.cmp_sheet.highlight_cells(row=i, column=6, bg="#e8f5e9", fg="#2e7d32")
-                else: self.cmp_sheet.highlight_cells(row=i, column=6, fg="#2e7d32")
-            elif results[i]["diff"] < 0: self.cmp_sheet.highlight_cells(row=i, column=6, bg="#ffebee", fg="#c62828")
+                bg_c = "#e8f5e9" if i < 3 else ""
+                self.cmp_sheet.highlight_cells(row=i, column=5, bg=bg_c, fg="#2e7d32")
+            elif results[i]["diff"] < 0: 
+                self.cmp_sheet.highlight_cells(row=i, column=5, bg="#ffebee", fg="#c62828")
+                
+            # 设置漂亮的蓝色字 (新加的 plots 在 7，后续顺延到 8, 9, 10)
+            if results[i]["plots"] > 0:
+                self.cmp_sheet.highlight_cells(row=i, column=7, fg="#1a73e8")
+            if results[i]["alt_hourly"] > 0:
+                self.cmp_sheet.highlight_cells(row=i, column=8, fg="#1a73e8")
+            if results[i]["alt_diff"] != 0:
+                self.cmp_sheet.highlight_cells(row=i, column=9, fg="#1a73e8")
+            if results[i]["alt_net"] > 0:
+                self.cmp_sheet.highlight_cells(row=i, column=10, fg="#1a73e8")
+                
+            # 🔥 智商税终极预警：扩种 > 当前施肥方案 (索引顺延到 9)
+            if results[i]["alt_diff"] > 0:
+                self.cmp_sheet.highlight_cells(row=i, column=9, bg="#fff8e1", fg="#f57f17")
+                
         self.cmp_sheet.redraw()
-
-    def exec_sync_width(self, event):
-        """对比页：拖拽列宽时自动保存到 JSON 存档"""
-        try:
-            if isinstance(event, dict) and 'resized' in event and event['resized'].get('columns', {}):
-                c_idx = list(event['resized']['columns'].keys())[0]
-                new_w = max(40, event['resized']['columns'][c_idx].get('new_size', 40))
-                
-                # 调整界面宽度
-                self.cmp_sheet.column_width(c_idx, width=new_w)
-                
-                # 存入 data 并触发保存
-                if "cmp_tksheet_widths" not in self.dm.data:
-                    self.dm.data["cmp_tksheet_widths"] = {}
-                self.dm.data["cmp_tksheet_widths"][str(c_idx)] = new_w
-                self.dm.save_data()
-        except Exception as e:
-            self.dm.debug_print(f"[DEBUG] ❌ 对比页列宽保存报错: {e}")
