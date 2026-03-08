@@ -15,6 +15,7 @@ def set_popup_geo(win, w, h):
 class CropEditor:
     def __init__(self, app, crop_name=None):
         self.app = app
+        self.dm = app.data_manager # 拿到数据中枢
         self.is_new = crop_name is None
         self.crop_name = crop_name
         self.win = tk.Toplevel(app)
@@ -23,7 +24,7 @@ class CropEditor:
         set_popup_geo(self.win, 600, 650)
         self.ents = self.create_form(self.win)
         if not self.is_new:
-            c = next((x for x in self.app.data["crops"] if str(x["name"]) == str(crop_name)), None)
+            c = next((x for x in self.dm.data["crops"] if str(x["name"]) == str(crop_name)), None)
             if c: self.fill_form(c)
         ttk.Button(self.win, text="💾 保存", command=self.on_save).pack(pady=10)
 
@@ -63,30 +64,21 @@ class CropEditor:
         ents['primary_type'].grid(row=0, column=1); ents['primary_type'].current(0)
         ttk.Label(pf, text="数量:").grid(row=0, column=2)
         ents['primary_qty'] = ttk.Entry(pf, width=5); ents['primary_qty'].grid(row=0, column=3)
-        
-        # 👇 新增：一级产物下拉框联动逻辑 👇
         def sync_primary(*args):
             if ents['primary_type'].get() == "无":
-                ents['primary_qty'].config(state='normal') # 先恢复正常才能清空
+                ents['primary_qty'].config(state='normal')
                 ents['primary_qty'].delete(0, 'end')
                 ents['primary_qty'].config(state='disabled')
-            else:
-                ents['primary_qty'].config(state='normal')
+            else: ents['primary_qty'].config(state='normal')
         ents['primary_type'].bind("<<ComboboxSelected>>", sync_primary)
-        ents['sync_primary'] = sync_primary # 保存起来供后续回填时调用
-        sync_primary() # 初始化调用
-        # 👆 新增结束 👆
-
-        # 👇 优化：果酱和腌菜的置灰与清空逻辑 👇
+        ents['sync_primary'] = sync_primary; sync_primary()
         def mk_chk(r, k_can, k_p, k_t, txt):
             ents[k_can] = tk.BooleanVar()
             def chk(): 
                 s = 'normal' if ents[k_can].get() else 'disabled'
                 ents[k_p].config(state='normal'); ents[k_t].config(state='normal')
-                if s == 'disabled': # 如果取消勾选，清空里面残留的数字
-                    ents[k_p].delete(0, 'end'); ents[k_t].delete(0, 'end')
+                if s == 'disabled': ents[k_p].delete(0, 'end'); ents[k_t].delete(0, 'end')
                 ents[k_p].config(state=s); ents[k_t].config(state=s)
-                
             ttk.Checkbutton(pf, text=txt, variable=ents[k_can], command=chk).grid(row=r, column=0)
             ttk.Label(pf, text="价格:").grid(row=r, column=2); ents[k_p]=ttk.Entry(pf, width=5); ents[k_p].grid(row=r, column=3)
             ttk.Label(pf, text="耗时:").grid(row=r, column=4); ents[k_t]=ttk.Entry(pf, width=5); ents[k_t].grid(row=r, column=5)
@@ -100,28 +92,20 @@ class CropEditor:
         keys = ['name','seed_price','h_count','h_qty','t1','t2','t3','raw_price','primary_qty','jam_price','jam_time','pickle_price','pickle_time']
         for k in keys:
             if k in self.ents:
-                self.ents[k].config(state='normal')
-                self.ents[k].delete(0, tk.END)
-                self.ents[k].insert(0, str(c.get(k,"")))
+                self.ents[k].config(state='normal'); self.ents[k].delete(0, tk.END); self.ents[k].insert(0, str(c.get(k,"")))
         self.ents['is_tree'].set(c.get('is_tree', False))
         self.ents['verified'].set(c.get('verified', False))
         self.ents['can_jam'].set(c.get('can_jam', False))
         self.ents['can_pickle'].set(c.get('can_pickle', False))
         self.ents['primary_type'].set(c.get('primary_type', "无"))
         self.ents['toggle_fn']()
-        
-        # 触发下拉框联动以更新“数量”框的置灰状态
         self.ents['sync_primary']()
-        
-        # 修正果酱/腌菜回填时的置灰状态
         def fix_state(chk_val, p_key, t_key):
             if not chk_val:
                 self.ents[p_key].config(state='normal'); self.ents[t_key].config(state='normal')
                 self.ents[p_key].delete(0, 'end'); self.ents[t_key].delete(0, 'end')
                 self.ents[p_key].config(state='disabled'); self.ents[t_key].config(state='disabled')
-            else:
-                self.ents[p_key].config(state='normal'); self.ents[t_key].config(state='normal')
-                
+            else: self.ents[p_key].config(state='normal'); self.ents[t_key].config(state='normal')
         fix_state(c.get('can_jam'), 'jam_price', 'jam_time')
         fix_state(c.get('can_pickle'), 'pickle_price', 'pickle_time')
 
@@ -132,15 +116,12 @@ class CropEditor:
             elif isinstance(v, tk.BooleanVar): d[k]=v.get()
             elif isinstance(v, ttk.Combobox): d[k]=v.get()
         if not d.get('name'): return
-        crops = self.app.data["crops"]
+        crops = self.dm.data["crops"]
         idx = -1
         if not self.is_new:
             idx = next((i for i,c in enumerate(crops) if c["name"]==self.crop_name), -1)
             old_data = crops[idx]
-            diffs = []
-            for k, v in d.items():
-                if str(v) != str(old_data.get(k, "")):
-                    diffs.append(f"{k}: {old_data.get(k)} -> {v}")
+            diffs = [f"{k}: {old_data.get(k)} -> {v}" for k, v in d.items() if str(v) != str(old_data.get(k, ""))]
             if diffs:
                 if not messagebox.askokcancel("确认", "确认变更？\n" + "\n".join(diffs[:8])): return
         else:
@@ -150,20 +131,24 @@ class CropEditor:
                 idx = crops.index(exist)
         if idx != -1: crops[idx] = d
         else: crops.append(d)
-        self.app.save_data(); self.app.refresh_all(); self.win.destroy()
+        
+        # 保存并让主程序刷新全部UI
+        self.dm.save_data()
+        self.app.refresh_all()
+        self.win.destroy()
 
 class ColumnManager:
     def __init__(self, app):
         self.app = app
+        self.dm = app.data_manager
         self.win = tk.Toplevel(app)
         self.win.title("列管理")
         set_popup_geo(self.win, 500, 400)
         lb1 = tk.Listbox(self.win); lb1.pack(side='left', fill='both', expand=True)
         lb2 = tk.Listbox(self.win); lb2.pack(side='right', fill='both', expand=True)
         all_children = set()
-        for kids in config.COLUMN_GROUPS.values():
-            all_children.update(kids)
-        curr = [c for c in app.data["display_columns"] if c in config.ALL_COLS]
+        for kids in config.COLUMN_GROUPS.values(): all_children.update(kids)
+        curr = [c for c in self.dm.data["display_columns"] if c in config.ALL_COLS]
         for c in curr:
             if c not in all_children: lb2.insert(tk.END, config.ALL_COLS[c])
         for c in config.ALL_COLS:
@@ -179,19 +164,18 @@ class ColumnManager:
             rev = {v:k for k,v in config.ALL_COLS.items()}
             res = [rev[lb2.get(i)] for i in range(lb2.size())]
             if "name" not in res: res.insert(0, "name")
-            app.data["display_columns"] = res
-            app.save_data(); app.refresh_all(); self.win.destroy()
+            self.dm.data["display_columns"] = res
+            self.dm.save_data()
+            self.app.refresh_all()
+            self.win.destroy()
         ttk.Button(btn, text="保存", command=save).pack()
 
 class FormulaViewer:
     @staticmethod
     def show(parent, crop_name, strategy, app):
-        c = next((x for x in app.data["crops"] if str(x["name"])==crop_name), None)
+        c = next((x for x in app.data_manager.data["crops"] if str(x["name"])==crop_name), None)
         if not c: return
-        
-        # ⚡ 核心修复：补上缺失的第三个参数 custom_ferts
-        _, F = calc_profits(c, app.data["settings"], app.data.get("fertilizers", []))
-        
+        _, F = calc_profits(c, app.data_manager.data["settings"], app.data_manager.data.get("fertilizers", []))
         if strategy in F: FormulaViewer.render(parent, crop_name, strategy, F[strategy])
 
     @staticmethod
