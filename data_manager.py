@@ -72,13 +72,28 @@ class DataManager:
 
     def save_data(self, report_sheet=None):
         try:
+            # 1. 🌟 核心修复：如果内存里有实时宽度，先同步给 data 字典
+            # 这样即使不传 report_sheet，保存的也是最新的内存值
+            if hasattr(self, 'runtime_col_widths') and self.runtime_col_widths:
+                self.data["tksheet_widths"] = self.runtime_col_widths
+
+            # 2. 如果传了 sheet，则抓取最实时的 UI 宽度（覆盖内存值）
             if report_sheet:
                 try: 
-                    self.data["tksheet_widths"] = {c_id: report_sheet.column_width(i) for i, c_id in enumerate(self.data["display_columns"]) if i < report_sheet.total_columns()}
-                except: pass
+                    # 这里建议同时更新内存备份，保证两边完全一致
+                    new_widths = {c_id: report_sheet.column_width(i) for i, c_id in enumerate(self.data["display_columns"]) if i < report_sheet.total_columns()}
+                    self.data["tksheet_widths"] = new_widths
+                    self.runtime_col_widths = new_widths # 同步更新内存备份
+                except: 
+                    raise Exception("报表保存失败,请检查报表是否正确打开")
+            
+            # 3. 正常存盘逻辑
             save_dict = self.data.copy()
             save_dict["crops"] = sorted(self.data["crops"], key=lambda x: x.get("_db_index", 0))
-            with open(config.DATA_FILE, 'w', encoding='utf-8') as f: json.dump(save_dict, f, ensure_ascii=False, indent=4)
+            
+            with open(config.DATA_FILE, 'w', encoding='utf-8') as f: 
+                json.dump(save_dict, f, ensure_ascii=False, indent=4)
+                
         except Exception as e: 
             self.debug_print(f"[DEBUG] ❌ 保存失败: {e}")
 
