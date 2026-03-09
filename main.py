@@ -1,7 +1,7 @@
 import tkinter as tk
 from tkinter import ttk
 from data_manager import DataManager
-from ui_tabs import ReportTab, DatabaseTab, SettingsTab, FertilizerTab, CompareTab
+from ui_tabs import ReportTab, DatabaseTab, SettingsTab, FertilizerTab, CompareTab, ProductionTab
 
 class FarmManagerApp(tk.Tk):
     def __init__(self):
@@ -21,7 +21,8 @@ class FarmManagerApp(tk.Tk):
         tab_frames = {}
         tabs_info = [
             ("report", " 📊 收益分析报表 "), ("compare", " ⚖️ 施肥效益对比 "),
-            ("db", " 💾 核心数据库 "), ("settings", " ⚙️ 参数设置 "), ("fert", " 🧪 肥料实验室 ")
+            ("db", " 💾 核心数据库 "), ("settings", " ⚙️ 参数设置 "), ("fert", " 🧪 肥料实验室 "),
+            ("production", " 🏭 生产链与物料规划 ") # 🌟 新增这一行
         ]
         for key, title in tabs_info:
             frame = ttk.Frame(self.notebook)
@@ -34,7 +35,9 @@ class FarmManagerApp(tk.Tk):
         self.db_tab = DatabaseTab(tab_frames["db"], self, self.data_manager)
         self.settings_tab = SettingsTab(tab_frames["settings"], self, self.data_manager)
         self.fert_tab = FertilizerTab(tab_frames["fert"], self, self.data_manager)
-
+        
+        # 挂载生产链页面
+        self.production_tab = ProductionTab(tab_frames["production"], self, self.data_manager)
     def setup_styles(self):
         style = ttk.Style(); style.theme_use("clam")
         style.configure("TNotebook", background="#f5f5f7")

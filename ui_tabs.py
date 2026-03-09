@@ -721,3 +721,336 @@ class CompareTab:
                 self.cmp_sheet.highlight_cells(row=i, column=9, bg="#fff8e1", fg="#f57f17")
                 
         self.cmp_sheet.redraw()
+
+class ProductionTab:
+    def __init__(self, parent, app, data_manager):
+        self.app = app
+        self.dm = data_manager
+        
+        if "recipes" not in self.dm.data:
+            self.dm.data["recipes"] = {}
+
+        # 状态变量
+        self.sort_desc = True # 默认按等级降序
+        self.current_library_names = [] # 记录当前列表框中对应的真实产物名称
+        self.var_target_product = tk.StringVar(value="[请从右侧库中选择]") # 当前锁定的目标
+
+        # 页面主框架：左右分栏
+        self.frame = tk.Frame(parent, bg="white")
+        self.frame.pack(fill="both", expand=True)
+        
+        left_frame = tk.Frame(self.frame, bg="white")
+        left_frame.pack(side="left", fill="both", expand=True, padx=15, pady=15)
+        
+        right_frame = tk.Frame(self.frame, bg="#f5f5f7", width=300)
+        right_frame.pack(side="right", fill="y", padx=15, pady=15)
+        right_frame.pack_propagate(False)
+
+        # ================= 左侧：BOM 整体可视化 =================
+        tk.Label(left_frame, text="📊 生产链图纸分析", font=("微软雅黑", 12, "bold"), bg="white").pack(anchor="w", pady=(0, 10))
+        
+        f_top = tk.Frame(left_frame, bg="white")
+        f_top.pack(fill="x", pady=5)
+        
+        # ⑥ 移除手动输入框，改为直观的选中显示
+        tk.Label(f_top, text="当前目标:", bg="white").pack(side="left")
+        tk.Label(f_top, textvariable=self.var_target_product, font=("微软雅黑", 11, "bold"), fg="#1565c0", bg="white").pack(side="left", padx=5)
+        
+        tk.Label(f_top, text="需求总数:", bg="white").pack(side="left", padx=(15, 2))
+        self.ent_target_qty = ttk.Entry(f_top, width=6)
+        self.ent_target_qty.insert(0, "1")
+        self.ent_target_qty.pack(side="left", padx=5)
+        
+        ttk.Button(f_top, text="🚀 重新生成物料清单", command=self.generate_bom).pack(side="left", padx=10)
+        tk.Label(f_top, text="💡 在树状图中【右键】底料可快速补全配方", fg="#888", bg="white").pack(side="left", padx=10)
+
+        # BOM 树状图
+        self.tv = ttk.Treeview(left_frame, show="tree", height=20)
+        self.tv.pack(fill="both", expand=True)
+        self.tv.bind("<Button-3>", self.on_right_click_tree)
+        
+        self.tv.tag_configure("verified", foreground="#2e7d32") 
+        self.tv.tag_configure("unverified", foreground="#d84315", font=("微软雅黑", 10, "bold")) 
+        self.tv.tag_configure("root_sum", foreground="#1565c0", font=("微软雅黑", 11, "bold"))
+
+        # ================= 右侧：产物管理总库 =================
+        tk.Label(right_frame, text="📦 产物管理库", font=("微软雅黑", 12, "bold"), bg="#f5f5f7").pack(anchor="w", pady=(0, 10))
+        
+        f_search = tk.Frame(right_frame, bg="#f5f5f7")
+        f_search.pack(fill="x", pady=5)
+        tk.Label(f_search, text="🔍 搜索:", bg="#f5f5f7").pack(side="left")
+        self.ent_search = ttk.Entry(f_search)
+        self.ent_search.pack(side="left", fill="x", expand=True, padx=(5, 5))
+        self.ent_search.bind("<KeyRelease>", lambda e: self.refresh_library()) 
+        
+        # ④ 等级排序切换按钮
+        ttk.Button(f_search, text="↕等级", width=5, command=self.toggle_sort).pack(side="right")
+
+        self.lb_library = tk.Listbox(right_frame, font=("微软雅黑", 10), selectmode="browse")
+        self.lb_library.pack(fill="both", expand=True, pady=10)
+        # ① 双击改为：设为目标并计算
+        self.lb_library.bind("<Double-Button-1>", lambda e: self.set_as_target()) 
+        # ③ 绑定右键菜单
+        self.lb_library.bind("<Button-3>", self.show_library_context_menu)
+
+        # 构建产物库右键菜单
+        self.menu_lib = tk.Menu(self.frame, tearoff=0)
+        self.menu_lib.add_command(label="🎯 设为目标并计算", command=self.set_as_target)
+        self.menu_lib.add_command(label="✏️ 编辑该配方", command=self.edit_selected_recipe)
+        self.menu_lib.add_command(label="🔄 切换核对状态", command=self.toggle_verify_status)
+        self.menu_lib.add_separator()
+        self.menu_lib.add_command(label="🗑️ 彻底删除", command=self.delete_selected_recipe)
+
+        f_btns1 = tk.Frame(right_frame, bg="#f5f5f7")
+        f_btns1.pack(fill="x", pady=2)
+        ttk.Button(f_btns1, text="➕ 新增基础产物", command=lambda: self.open_recipe_editor("")).pack(side="left", fill="x", expand=True)
+
+        # 初始化加载库
+        self.refresh_library()
+
+    # --- ④ 核心逻辑：递归计算产物等级 ---
+    def _calc_item_level(self, item_name, path=None):
+        """计算最长链路深度。原材=Lv1，需要原材合成=Lv2"""
+        if path is None: path = set()
+        if item_name in path: return 1 # 防止循环依赖死循环
+        
+        recipes = self.dm.data.get("recipes", {})
+        mats = recipes.get(item_name, {}).get("materials", {})
+        if not mats: return 1 # 如果没有下级材料，那就是最底层的原矿/原果
+        
+        path.add(item_name)
+        max_depth = 1
+        for mat in mats:
+            depth = self._calc_item_level(mat, path.copy())
+            if depth > max_depth: max_depth = depth
+        return max_depth + 1
+
+    # --- 产物库交互逻辑 ---
+    def toggle_sort(self):
+        self.sort_desc = not self.sort_desc
+        self.refresh_library()
+
+    def refresh_library(self):
+        self.lb_library.delete(0, tk.END)
+        self.current_library_names.clear()
+        
+        keyword = self.ent_search.get().strip().lower()
+        recipes = self.dm.data.get("recipes", {})
+        
+        # 收集并计算等级
+        items_data = []
+        for name, data in recipes.items():
+            if keyword in name.lower():
+                level = self._calc_item_level(name)
+                items_data.append((name, data, level))
+                
+        # 排序：按等级降/升序，等级相同的按名称排
+        items_data.sort(key=lambda x: (x[2], x[0]), reverse=self.sort_desc)
+        
+        # 填充列表
+        for name, data, level in items_data:
+            status = "✅" if data.get("verified", False) else "❌"
+            display_text = f"[Lv.{level}] {status} {name}"
+            self.lb_library.insert(tk.END, display_text)
+            self.current_library_names.append(name) # 同步保存真实名字
+
+    def get_selected_library_item(self):
+        sel = self.lb_library.curselection()
+        if not sel: return None
+        return self.current_library_names[sel[0]] # 准确提取对应的真实名字
+
+    def show_library_context_menu(self, event):
+        """③ 产物库右键弹出菜单"""
+        idx = self.lb_library.nearest(event.y)
+        if idx >= 0:
+            self.lb_library.selection_clear(0, tk.END)
+            self.lb_library.selection_set(idx)
+            self.lb_library.activate(idx)
+            self.menu_lib.tk_popup(event.x_root, event.y_root)
+
+    def toggle_verify_status(self):
+        """③ 右键快捷切换核对状态"""
+        name = self.get_selected_library_item()
+        if name and name in self.dm.data.get("recipes", {}):
+            current_status = self.dm.data["recipes"][name].get("verified", False)
+            self.dm.data["recipes"][name]["verified"] = not current_status
+            self.dm.save_data()
+            self.refresh_library()
+            self.generate_bom()
+
+    def set_as_target(self):
+        name = self.get_selected_library_item()
+        if name:
+            self.var_target_product.set(name) # ⑥ 更新锁定的目标
+            self.generate_bom() # 自动开始计算
+
+    def edit_selected_recipe(self):
+        name = self.get_selected_library_item()
+        if name: self.open_recipe_editor(name)
+
+    def delete_selected_recipe(self):
+        name = self.get_selected_library_item()
+        if not name: return
+        if messagebox.askyesno("危险操作", f"确定要从数据库彻底删除产物【{name}】吗？\n删除后包含它的高级配方也会报错！"):
+            del self.dm.data["recipes"][name]
+            self.dm.save_data()
+            self.refresh_library()
+            self.generate_bom()
+
+    # --- 核心：配方编辑弹窗 (模态框) ---
+    def open_recipe_editor(self, default_name=""):
+        win = tk.Toplevel(self.app)
+        win.title(f"🛠️ 编辑配方 - {default_name}" if default_name else "🛠️ 新增产物配方")
+        
+        # ⑤ 弹窗智能定位到鼠标附近
+        mouse_x, mouse_y = self.app.winfo_pointerxy()
+        win.geometry(f"360x480+{mouse_x}+{mouse_y}")
+        win.minsize(360, 480)
+
+        win.transient(self.app)
+        win.grab_set() 
+        
+        recipe = self.dm.data.get("recipes", {}).get(default_name, {})
+        local_mats = recipe.get("materials", {}).copy()
+        var_ver = tk.BooleanVar(value=recipe.get("verified", False))
+
+        f_main = tk.Frame(win, padx=20, pady=15)
+        f_main.pack(fill="both", expand=True)
+
+        tk.Label(f_main, text="产物名称:").pack(anchor="w")
+        ent_name = ttk.Entry(f_main, font=("微软雅黑", 10))
+        ent_name.pack(fill="x", pady=2)
+        ent_name.insert(0, default_name)
+        if default_name: ent_name.configure(state="readonly")
+
+        tk.Checkbutton(f_main, text="✅ 标记为【已核对】(底层已无缺失)", variable=var_ver).pack(anchor="w", pady=5)
+
+        tk.Label(f_main, text="所需材料:").pack(anchor="w", pady=(10, 2))
+        f_add = tk.Frame(f_main)
+        f_add.pack(fill="x")
+        ent_m_name = ttk.Entry(f_add, width=15)
+        ent_m_name.pack(side="left")
+        tk.Label(f_add, text="数量:").pack(side="left", padx=2)
+        ent_m_qty = ttk.Entry(f_add, width=6)
+        ent_m_qty.pack(side="left")
+        
+        lb_mats = tk.Listbox(f_main, height=8, font=("微软雅黑", 10))
+        
+        def refresh_local_list():
+            lb_mats.delete(0, tk.END)
+            for m_name, m_qty in local_mats.items():
+                q_fmt = int(m_qty) if m_qty.is_integer() else m_qty
+                lb_mats.insert(tk.END, f"{m_name} x {q_fmt}")
+                
+        def add_mat():
+            n, q_str = ent_m_name.get().strip(), ent_m_qty.get().strip()
+            if not n or not q_str: return
+            try:
+                local_mats[n] = float(q_str)
+                refresh_local_list()
+                ent_m_name.delete(0, tk.END); ent_m_qty.delete(0, tk.END)
+                ent_m_name.focus()
+            except: messagebox.showerror("错误", "数量必须是数字", parent=win)
+
+        def del_mat():
+            sel = lb_mats.curselection()
+            if not sel: return
+            n = lb_mats.get(sel[0]).split(" x ")[0]
+            if n in local_mats: del local_mats[n]; refresh_local_list()
+
+        ttk.Button(f_add, text="添加", command=add_mat).pack(side="left", padx=5)
+        lb_mats.pack(fill="x", pady=5)
+        
+        # ② 修复弹窗底部的按钮排版，去除异常空白
+        f_bottom = tk.Frame(f_main)
+        f_bottom.pack(fill="x", pady=(5, 0))
+        ttk.Button(f_bottom, text="➖ 移除选中材料", command=del_mat).pack(side="left")
+        
+        def save_and_close():
+            final_name = ent_name.get().strip()
+            if not final_name: return messagebox.showwarning("提示", "产物名称不能为空", parent=win)
+            self.dm.data["recipes"][final_name] = {"verified": var_ver.get(), "materials": local_mats.copy()}
+            self.dm.save_data()
+            self.refresh_library()
+            
+            # 如果正处在计算分析该产物的状态，自动刷新分析图
+            if self.var_target_product.get() == final_name or "未选择" not in self.var_target_product.get():
+                self.generate_bom()
+            win.destroy()
+
+        ttk.Button(f_main, text="💾 保存配方并关闭", command=save_and_close).pack(fill="x", pady=3)
+        refresh_local_list()
+
+    # --- BOM 分析引擎逻辑 ---
+    def _calc_flat_totals(self, item_name, qty, path_set):
+        if item_name in path_set: return 
+        self.flat_totals[item_name] = self.flat_totals.get(item_name, 0) + qty
+        recipes = self.dm.data.get("recipes", {})
+        is_known = item_name in recipes
+        if not is_known or not recipes[item_name].get("verified", False):
+            self.unverified_items.add(item_name)
+        if is_known:
+            new_path = path_set.copy()
+            new_path.add(item_name)
+            for mat_name, u_qty in recipes[item_name].get("materials", {}).items():
+                self._calc_flat_totals(mat_name, qty * u_qty, new_path)
+
+    def generate_bom(self):
+        target = self.var_target_product.get().strip()
+        qty_str = self.ent_target_qty.get().strip()
+        self.tv.delete(*self.tv.get_children()) 
+        
+        if "请从右侧库中选择" in target or not target: return
+        
+        try: total_qty = float(qty_str)
+        except: return messagebox.showerror("错误", "需求总数必须是纯数字！")
+
+        self.flat_totals = {}
+        self.unverified_items = set()
+        self._calc_flat_totals(target, total_qty, set())
+
+        node_sum = self.tv.insert("", "end", text="🛒 【全局材料总需】 (自动合并汇总)", tags=("root_sum",))
+        for item, qty in self.flat_totals.items():
+            qty_fmt = int(qty) if qty.is_integer() else qty
+            is_veri = item not in self.unverified_items
+            status = "✅" if is_veri else "❌[缺底层配方]"
+            tag = "verified" if is_veri else "unverified"
+            self.tv.insert(node_sum, "end", text=f" ▪ {item}   x {qty_fmt}   {status}", values=(item,), tags=(tag,))
+        self.tv.item(node_sum, open=True)
+
+        node_path = self.tv.insert("", "end", text=f"🗺️ 【{target}】 生产流程路线图", tags=("root_sum",))
+        self.insert_bom_node(node_path, target, total_qty, set())
+        self.tv.item(node_path, open=True)
+
+    def insert_bom_node(self, parent_id, item_name, required_qty, path_set):
+        recipes = self.dm.data.get("recipes", {})
+        qty_fmt = int(required_qty) if required_qty.is_integer() else required_qty
+        
+        if item_name in path_set:
+            self.tv.insert(parent_id, "end", text=f"⚠️ {item_name}   x {qty_fmt}   (循环嵌套异常)", values=(item_name,), tags=("unverified",))
+            return
+
+        is_known = item_name in recipes
+        is_verified = is_known and recipes[item_name].get("verified", False)
+        status_text = "[✅已核对]" if is_verified else "[❌未核对]"
+        tag = "verified" if is_verified else "unverified"
+        display_text = f" └─ {item_name}   x {qty_fmt}   {status_text}"
+        
+        node_id = self.tv.insert(parent_id, "end", text=display_text, values=(item_name,), tags=(tag,))
+        
+        if is_known:
+            new_path = path_set.copy()
+            new_path.add(item_name)
+            for mat_name, unit_qty in recipes[item_name].get("materials", {}).items():
+                self.insert_bom_node(node_id, mat_name, required_qty * unit_qty, new_path)
+        self.tv.item(node_id, open=True)
+
+    def on_right_click_tree(self, event):
+        item_id = self.tv.identify_row(event.y)
+        if not item_id: return
+        vals = self.tv.item(item_id, "values")
+        if not vals: return 
+        item_name = vals[0]
+        
+        # 顺藤摸瓜：直接打开智能跟随弹窗
+        self.open_recipe_editor(item_name)

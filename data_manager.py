@@ -62,6 +62,9 @@ class DataManager:
                 self.data["crops"] = loaded.get("crops", [])
                 for i, c in enumerate(self.data["crops"]): 
                     c.setdefault("_db_index", i)
+                # 👇 新增：读取生产配方链数据
+                self.data["recipes"] = loaded.get("recipes", {})
+                
                 # 3. 核心：强制同步报表与对比页的列宽缓存
                 self.runtime_col_widths = loaded.get("tksheet_widths", {}) 
                 self.data["cmp_tksheet_widths"] = loaded.get("cmp_tksheet_widths", {})

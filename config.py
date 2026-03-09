@@ -22,7 +22,7 @@ except Exception:
     DOCUMENTS_PATH = os.path.join(os.path.expanduser('~'), 'Documents')
 
 APP_DIR = os.path.join(DOCUMENTS_PATH, 'FarmManagerData')
-DATA_FILE = os.path.join(APP_DIR, '存档数据.json')
+DATA_FILE = os.path.join(APP_DIR, 'StarSandData.json')
 
 if not os.path.exists(APP_DIR):
     os.makedirs(APP_DIR)
