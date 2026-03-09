@@ -35,7 +35,7 @@ class FarmManagerApp(tk.Tk):
         self.db_tab = DatabaseTab(tab_frames["db"], self, self.data_manager)
         self.settings_tab = SettingsTab(tab_frames["settings"], self, self.data_manager)
         self.fert_tab = FertilizerTab(tab_frames["fert"], self, self.data_manager)
-        
+
         # 挂载生产链页面
         self.production_tab = ProductionTab(tab_frames["production"], self, self.data_manager)
     def setup_styles(self):
@@ -45,6 +45,9 @@ class FarmManagerApp(tk.Tk):
         style.configure("TButton", font=("微软雅黑", 9))
         style.map("TEntry", fieldbackground=[("disabled", "#e0e0e0")])
         style.map("TCombobox", fieldbackground=[("disabled", "#e0e0e0")])
+        # 🌟 新增这两行，调整所有树状图的默认字体和行高
+        style.configure("Treeview", font=("微软雅黑", 14), rowheight=26) 
+        style.configure("Treeview.Heading", font=("微软雅黑", 10, "bold")) # 表头字体
 
     def refresh_all(self):
         """全局刷新枢纽：当某一个子页面改了数据，调用这个通知大家一起刷新"""

@@ -765,8 +765,8 @@ class ProductionTab:
         
         tk.Label(f_top, text="当前目标:", bg="white").pack(side="left")
         # 🌟 新增：前进后退按钮
-        ttk.Button(f_top, text="◀", width=2, command=self.history_back).pack(side="left", padx=(5,0))
-        ttk.Button(f_top, text="▶", width=2, command=self.history_forward).pack(side="left", padx=(0,5))
+        ttk.Button(f_top, text="◀", width=4, command=self.history_back).pack(side="left", padx=(5,0))
+        ttk.Button(f_top, text="▶", width=4, command=self.history_forward).pack(side="left", padx=(0,5))
         
         tk.Label(f_top, textvariable=self.var_target_product, font=("微软雅黑", 11, "bold"), fg="#1565c0", bg="white").pack(side="left", padx=5)
         
@@ -795,14 +795,17 @@ class ProductionTab:
         f_search = tk.Frame(right_frame, bg="#f5f5f7")
         f_search.pack(fill="x", pady=5)
         tk.Label(f_search, text="🔍 搜索:", bg="#f5f5f7").pack(side="left")
+        
+        # 🌟 关键修复：先把固定尺寸的按钮 pack 到右边，保住它的绝对生存空间
+        # 移除了死板的 width=5，让按钮根据文字自动适配最佳宽度
+        ttk.Button(f_search, text="↕等级", command=self.toggle_sort).pack(side="right", padx=(0, 2))
+        
+        # 🌟 然后再把具有伸缩属性的输入框 pack 进去填满剩下的空间
         self.ent_search = ttk.Entry(f_search)
         self.ent_search.pack(side="left", fill="x", expand=True, padx=(5, 5))
-        self.ent_search.bind("<KeyRelease>", lambda e: self.refresh_library()) 
-        
-        # ④ 等级排序切换按钮
-        ttk.Button(f_search, text="↕等级", width=5, command=self.toggle_sort).pack(side="right")
+        self.ent_search.bind("<KeyRelease>", lambda e: self.refresh_library())
 
-        self.lb_library = tk.Listbox(right_frame, font=("微软雅黑", 10), selectmode="browse")
+        self.lb_library = tk.Listbox(right_frame, font=("微软雅黑", 12), selectmode="browse")
         self.lb_library.pack(fill="both", expand=True, pady=10)
         # ① 双击改为：设为目标并计算
         self.lb_library.bind("<Double-Button-1>", lambda e: self.set_as_target()) 
@@ -816,6 +819,7 @@ class ProductionTab:
         self.menu_lib.add_command(label="🔄 切换核对状态", command=self.toggle_verify_status)
         self.menu_lib.add_separator()
         self.menu_lib.add_command(label="🗑️ 彻底删除", command=self.delete_selected_recipe)
+        self.menu_lib.add_command(label="🔍 查看可合成产物 (用途)", command=self.show_usages_for_library_item)
 
         f_btns1 = tk.Frame(right_frame, bg="#f5f5f7")
         f_btns1.pack(fill="x", pady=2)
@@ -828,7 +832,7 @@ class ProductionTab:
         self.menu_bom.add_command(label="🔄 切换核对状态", command=self._toggle_bom_verify)
         self.menu_bom.add_separator()
         self.menu_bom.add_command(label="🗑️ 彻底删除", command=self._delete_bom_item)
-
+        self.menu_bom.add_command(label="🔍 查看可合成产物 (用途)", command=self.show_usages_for_bom_item)
         # 初始化加载库
         self.refresh_library()
 
@@ -1156,3 +1160,61 @@ class ProductionTab:
         if vals:
             self.open_recipe_editor(vals[0]) # 双击文字打开编辑
         return "break" # 阻止文字双击引发的展开/折叠
+    def show_usages_for_library_item(self):
+        name = self.get_selected_library_item()
+        if name: self._show_usages_dialog(name)
+
+    def show_usages_for_bom_item(self):
+        name = self.bom_right_clicked_item
+        if name: self._show_usages_dialog(name)
+    def _show_usages_dialog(self, material_name):
+        """反查引擎：遍历所有配方，找出谁用到了该材料"""
+        usages = []
+        recipes = self.dm.data.get("recipes", {})
+        
+        # 1. 扫描数据库
+        for prod_name, data in recipes.items():
+            mats = data.get("materials", {})
+            if material_name in mats:
+                usages.append((prod_name, mats[material_name]))
+                
+        # 2. 如果没找到，温柔提示
+        if not usages:
+            messagebox.showinfo("用途查询", f"【{material_name}】目前没有被任何产物作为配方材料使用。\n(它可能是一个最终级产物，或者其相关配方尚未录入)")
+            return
+
+        # 3. 如果找到了，构建精美的小弹窗
+        win = tk.Toplevel(self.app)
+        win.title(f"🔍 【{material_name}】的合成用途")
+        
+        mouse_x, mouse_y = self.app.winfo_pointerxy()
+        win.geometry(f"300x350+{mouse_x}+{mouse_y}")
+        win.transient(self.app)
+        
+        tk.Label(win, text=f"以下产物需要用到【{material_name}】:", font=("微软雅黑", 10, "bold")).pack(anchor="w", padx=15, pady=(15, 5))
+        
+        # 列表展示区
+        lb = tk.Listbox(win, font=("微软雅黑", 10), selectmode="browse")
+        lb.pack(fill="both", expand=True, padx=15, pady=5)
+        
+        # 填入数据，并自动附带产物等级
+        for prod, qty in usages:
+            qty_fmt = int(qty) if qty.is_integer() else qty
+            level = self._calc_item_level(prod)
+            lvl_str = chr(9311 + level) if 1 <= level <= 20 else f"[{level}]"
+            lb.insert(tk.END, f"{lvl_str} {prod}  (单次需 {qty_fmt} 个)")
+            
+        # 🌟 绝杀交互：双击列表里的产物，直接跳转过去分析！
+        def on_double_click(event):
+            sel = lb.curselection()
+            if sel:
+                # 从形如 "③ 蛋糕 (单次需 2 个)" 的文本中精准剥离出名字 "蛋糕"
+                raw_text = lb.get(sel[0])
+                target_prod = raw_text.split("  (")[0][2:].strip() 
+                
+                self._set_target_internal(target_prod) # 调用历史记录引擎切换目标
+                win.destroy() # 关闭小弹窗
+                
+        lb.bind("<Double-Button-1>", on_double_click)
+        
+        tk.Label(win, text="💡 提示: 双击列表中的产物可直接跳转分析", fg="#888", font=("微软雅黑", 9)).pack(pady=(0, 10))
