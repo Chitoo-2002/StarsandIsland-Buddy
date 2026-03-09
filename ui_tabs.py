@@ -735,16 +735,27 @@ class ProductionTab:
         self.current_library_names = [] # 记录当前列表框中对应的真实产物名称
         self.var_target_product = tk.StringVar(value="[请从右侧库中选择]") # 当前锁定的目标
 
-        # 页面主框架：左右分栏
+        # 🌟 新增：历史记录栈与左侧菜单记忆
+        self.history = []     
+        self.history_idx = -1 
+        self.bom_right_clicked_item = ""
+
+        # 页面主框架
         self.frame = tk.Frame(parent, bg="white")
         self.frame.pack(fill="both", expand=True)
         
-        left_frame = tk.Frame(self.frame, bg="white")
-        left_frame.pack(side="left", fill="both", expand=True, padx=15, pady=15)
+        # 🌟 引入 PanedWindow (可拖拽分割线面板)
+        self.paned = ttk.PanedWindow(self.frame, orient=tk.HORIZONTAL)
+        self.paned.pack(fill="both", expand=True, padx=10, pady=10)
         
-        right_frame = tk.Frame(self.frame, bg="#f5f5f7", width=300)
-        right_frame.pack(side="right", fill="y", padx=15, pady=15)
-        right_frame.pack_propagate(False)
+        # 创建左右面板，并加入 PanedWindow
+        left_frame = tk.Frame(self.paned, bg="white")
+        right_frame = tk.Frame(self.paned, bg="#f5f5f7")
+        
+        # 🌟 设置初始宽度权重，左边占大头 (weight=3)，右边占小头 (weight=1)
+        self.paned.add(left_frame, weight=3)
+        self.paned.add(right_frame, weight=1)
+        # 注意：这里去掉了原有的 pack_propagate(False)，让分割线完全接管宽度控制
 
         # ================= 左侧：BOM 整体可视化 =================
         tk.Label(left_frame, text="📊 生产链图纸分析", font=("微软雅黑", 12, "bold"), bg="white").pack(anchor="w", pady=(0, 10))
@@ -752,8 +763,11 @@ class ProductionTab:
         f_top = tk.Frame(left_frame, bg="white")
         f_top.pack(fill="x", pady=5)
         
-        # ⑥ 移除手动输入框，改为直观的选中显示
         tk.Label(f_top, text="当前目标:", bg="white").pack(side="left")
+        # 🌟 新增：前进后退按钮
+        ttk.Button(f_top, text="◀", width=2, command=self.history_back).pack(side="left", padx=(5,0))
+        ttk.Button(f_top, text="▶", width=2, command=self.history_forward).pack(side="left", padx=(0,5))
+        
         tk.Label(f_top, textvariable=self.var_target_product, font=("微软雅黑", 11, "bold"), fg="#1565c0", bg="white").pack(side="left", padx=5)
         
         tk.Label(f_top, text="需求总数:", bg="white").pack(side="left", padx=(15, 2))
@@ -762,12 +776,14 @@ class ProductionTab:
         self.ent_target_qty.pack(side="left", padx=5)
         
         ttk.Button(f_top, text="🚀 重新生成物料清单", command=self.generate_bom).pack(side="left", padx=10)
-        tk.Label(f_top, text="💡 在树状图中【右键】底料可快速补全配方", fg="#888", bg="white").pack(side="left", padx=10)
+        tk.Label(f_top, text="💡 在树状图中双击展开，右键调出操作菜单", fg="#888", bg="white").pack(side="left", padx=10)
 
         # BOM 树状图
         self.tv = ttk.Treeview(left_frame, show="tree", height=20)
         self.tv.pack(fill="both", expand=True)
+        # 🌟 修改：同时绑定右键和左键双击
         self.tv.bind("<Button-3>", self.on_right_click_tree)
+        self.tv.bind("<Double-Button-1>", self.on_double_click_tree)
         
         self.tv.tag_configure("verified", foreground="#2e7d32") 
         self.tv.tag_configure("unverified", foreground="#d84315", font=("微软雅黑", 10, "bold")) 
@@ -805,8 +821,52 @@ class ProductionTab:
         f_btns1.pack(fill="x", pady=2)
         ttk.Button(f_btns1, text="➕ 新增基础产物", command=lambda: self.open_recipe_editor("")).pack(side="left", fill="x", expand=True)
 
+        # 🌟 新增：左侧 BOM 树专属右键菜单
+        self.menu_bom = tk.Menu(self.frame, tearoff=0)
+        self.menu_bom.add_command(label="🎯 设为目标并计算", command=lambda: self._set_target_internal(self.bom_right_clicked_item))
+        self.menu_bom.add_command(label="✏️ 编辑该配方", command=lambda: self.open_recipe_editor(self.bom_right_clicked_item))
+        self.menu_bom.add_command(label="🔄 切换核对状态", command=self._toggle_bom_verify)
+        self.menu_bom.add_separator()
+        self.menu_bom.add_command(label="🗑️ 彻底删除", command=self._delete_bom_item)
+
         # 初始化加载库
         self.refresh_library()
+
+    # 🌟 新增：以下这一整块都是配合历史记录和新菜单的功能函数
+    def history_back(self):
+        if self.history_idx > 0:
+            self.history_idx -= 1
+            self.var_target_product.set(self.history[self.history_idx])
+            self.generate_bom()
+
+    def history_forward(self):
+        if self.history_idx < len(self.history) - 1:
+            self.history_idx += 1
+            self.var_target_product.set(self.history[self.history_idx])
+            self.generate_bom()
+
+    def _set_target_internal(self, name):
+        """核心目标切换函数，处理历史记录的覆盖"""
+        if not name or "请从右侧库中选择" in name: return
+        self.history = self.history[:self.history_idx + 1]
+        if not self.history or self.history[-1] != name:
+            self.history.append(name)
+            self.history_idx += 1
+        self.var_target_product.set(name)
+        self.generate_bom()
+
+    def _toggle_bom_verify(self):
+        name = self.bom_right_clicked_item
+        if name and name in self.dm.data.get("recipes", {}):
+            current = self.dm.data["recipes"][name].get("verified", False)
+            self.dm.data["recipes"][name]["verified"] = not current
+            self.dm.save_data(); self.refresh_library(); self.generate_bom()
+
+    def _delete_bom_item(self):
+        name = self.bom_right_clicked_item
+        if name and messagebox.askyesno("危险操作", f"确定删除产物【{name}】吗？"):
+            del self.dm.data["recipes"][name]
+            self.dm.save_data(); self.refresh_library(); self.generate_bom()
 
     # --- ④ 核心逻辑：递归计算产物等级 ---
     def _calc_item_level(self, item_name, path=None):
@@ -881,8 +941,7 @@ class ProductionTab:
     def set_as_target(self):
         name = self.get_selected_library_item()
         if name:
-            self.var_target_product.set(name) # ⑥ 更新锁定的目标
-            self.generate_bom() # 自动开始计算
+            self._set_target_internal(name) # 🌟 接入新的历史记录架构
 
     def edit_selected_recipe(self):
         name = self.get_selected_library_item()
@@ -902,10 +961,23 @@ class ProductionTab:
         win = tk.Toplevel(self.app)
         win.title(f"🛠️ 编辑配方 - {default_name}" if default_name else "🛠️ 新增产物配方")
         
-        # ⑤ 弹窗智能定位到鼠标附近
+        # ⑤ 弹窗智能定位，增加防溢出屏幕检测
         mouse_x, mouse_y = self.app.winfo_pointerxy()
-        win.geometry(f"360x480+{mouse_x}+{mouse_y}")
-        win.minsize(360, 480)
+        win_w, win_h = 360, 480
+        
+        # 获取屏幕真实宽高
+        screen_w = self.app.winfo_screenwidth()
+        screen_h = self.app.winfo_screenheight()
+        
+        # 如果超出右边界，往左靠
+        if mouse_x + win_w > screen_w:
+            mouse_x = screen_w - win_w - 20
+        # 如果超出下边界，往上靠（预留任务栏空间）
+        if mouse_y + win_h > screen_h:
+            mouse_y = screen_h - win_h - 60
+            
+        win.geometry(f"{win_w}x{win_h}+{mouse_x}+{mouse_y}")
+        win.minsize(win_w, win_h)
 
         win.transient(self.app)
         win.grab_set() 
@@ -1009,13 +1081,26 @@ class ProductionTab:
         self.unverified_items = set()
         self._calc_flat_totals(target, total_qty, set())
 
-        node_sum = self.tv.insert("", "end", text="🛒 【全局材料总需】 (自动合并汇总)", tags=("root_sum",))
+        node_sum = self.tv.insert("", "end", text="🛒 【全局材料总需】 (按等级自动排序合并)", tags=("root_sum",))
+        
+        # 🌟 修改：先收集所有材料并计算等级，然后进行排序
+        sorted_totals = []
         for item, qty in self.flat_totals.items():
+            level = self._calc_item_level(item)
+            sorted_totals.append((item, qty, level))
+            
+        # 🌟 按等级排序（升序：①在最前面），等级相同则按名字排序
+        sorted_totals.sort(key=lambda x: (x[2], x[0]))
+
+        # 🌟 遍历排序后的列表插入树状图
+        for item, qty, level in sorted_totals:
             qty_fmt = int(qty) if qty.is_integer() else qty
             is_veri = item not in self.unverified_items
-            status = "✅" if is_veri else "❌[缺底层配方]"
+            
+            lvl_str = chr(9311 + level) if 1 <= level <= 20 else f"[{level}]"
+            status = "" if is_veri else "❌[缺底层]" 
             tag = "verified" if is_veri else "unverified"
-            self.tv.insert(node_sum, "end", text=f" ▪ {item}   x {qty_fmt}   {status}", values=(item,), tags=(tag,))
+            self.tv.insert(node_sum, "end", text=f" ▪ {lvl_str} {item}   x {qty_fmt}   {status}", values=(item,), tags=(tag,))
         self.tv.item(node_sum, open=True)
 
         node_path = self.tv.insert("", "end", text=f"🗺️ 【{target}】 生产流程路线图", tags=("root_sum",))
@@ -1032,9 +1117,13 @@ class ProductionTab:
 
         is_known = item_name in recipes
         is_verified = is_known and recipes[item_name].get("verified", False)
-        status_text = "[✅已核对]" if is_verified else "[❌未核对]"
+        
+        # 🌟 新增：等级图标，隐藏已核对
+        level = self._calc_item_level(item_name)
+        lvl_str = chr(9311 + level) if 1 <= level <= 20 else f"[{level}]"
+        status_text = "" if is_verified else "  [❌未核对]"
         tag = "verified" if is_verified else "unverified"
-        display_text = f" └─ {item_name}   x {qty_fmt}   {status_text}"
+        display_text = f" └─ {lvl_str} {item_name}   x {qty_fmt}{status_text}"
         
         node_id = self.tv.insert(parent_id, "end", text=display_text, values=(item_name,), tags=(tag,))
         
@@ -1045,12 +1134,25 @@ class ProductionTab:
                 self.insert_bom_node(node_id, mat_name, required_qty * unit_qty, new_path)
         self.tv.item(node_id, open=True)
 
+    # 🌟 完全重写：分离右键与双击事件
     def on_right_click_tree(self, event):
         item_id = self.tv.identify_row(event.y)
         if not item_id: return
         vals = self.tv.item(item_id, "values")
         if not vals: return 
-        item_name = vals[0]
         
-        # 顺藤摸瓜：直接打开智能跟随弹窗
-        self.open_recipe_editor(item_name)
+        self.bom_right_clicked_item = vals[0]
+        self.tv.selection_set(item_id) # 视觉选中
+        self.menu_bom.tk_popup(event.x_root, event.y_root) # 弹出左侧菜单
+
+    def on_double_click_tree(self, event):
+        region = self.tv.identify_region(event.x, event.y)
+        if region == "tree": 
+            return # 点了箭头，正常展开/折叠
+            
+        item_id = self.tv.identify_row(event.y)
+        if not item_id: return
+        vals = self.tv.item(item_id, "values")
+        if vals:
+            self.open_recipe_editor(vals[0]) # 双击文字打开编辑
+        return "break" # 阻止文字双击引发的展开/折叠
