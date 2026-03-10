@@ -1035,7 +1035,8 @@ class ProductionTab:
         ent_name = ttk.Entry(f_main, font=("微软雅黑", 10))
         ent_name.pack(fill="x", pady=2)
         ent_name.insert(0, default_name)
-        if default_name: ent_name.configure(state="readonly")
+        # 🌟 1. 彻底解除了 readonly 封印，允许随时修改名称
+        # if default_name: ent_name.configure(state="readonly") 
 
         tk.Checkbutton(f_main, text="✅ 标记为【已核对】(底层已无缺失)", variable=var_ver).pack(anchor="w", pady=5)
 
@@ -1083,7 +1084,38 @@ class ProductionTab:
         def save_and_close():
             final_name = ent_name.get().strip()
             if not final_name: return messagebox.showwarning("提示", "产物名称不能为空", parent=win)
-            self.dm.data["recipes"][final_name] = {"verified": var_ver.get(), "materials": local_mats.copy()}
+            
+            recipes = self.dm.data.setdefault("recipes", {})
+
+            # ================= 🌟 2. 核心黑科技：全库连锁更名 =================
+            if default_name and final_name != default_name:
+                # 防撞车检测
+                if final_name in recipes:
+                    return messagebox.showwarning("冲突", f"已存在名为【{final_name}】的产物，请换个名字！", parent=win)
+                
+                # 危险操作确认
+                if not messagebox.askyesno("更名确认", f"确定将【{default_name}】更名为【{final_name}】吗？\n\n程序将自动遍历所有配方，将旧材料名安全替换为新名称，防止生产链断裂！", parent=win):
+                    return
+                
+                # 遍历全库所有配方，如果某配方的材料里用了旧名字，就替换成新名字
+                for r_name, r_data in recipes.items():
+                    mats = r_data.get("materials", {})
+                    if default_name in mats:
+                        qty = mats.pop(default_name)
+                        mats[final_name] = qty # 数量原封不动继承过去
+                        
+                # 销毁旧字典键
+                if default_name in recipes:
+                    del recipes[default_name]
+                    
+                # 修正：如果当前正在显示旧名字的生产链，或者历史记录里有旧名字，一并改掉
+                if self.var_target_product.get() == default_name:
+                    self.var_target_product.set(final_name)
+                self.history = [final_name if x == default_name else x for x in self.history]
+            # ===============================================================
+
+            # 保存本配方数据
+            recipes[final_name] = {"verified": var_ver.get(), "materials": local_mats.copy()}
             self.dm.save_data()
             self.refresh_library()
             
@@ -1094,7 +1126,6 @@ class ProductionTab:
 
         ttk.Button(f_main, text="💾 保存配方并关闭", command=save_and_close).pack(fill="x", pady=3)
         refresh_local_list()
-
     def _calc_totals_and_consumers(self, item_name, qty, path_set, consumer=None):
         """核心算法 1：递归统计总数，并记录每个物品被谁消耗（用于提示何时使用）"""
         if item_name in path_set: return 
