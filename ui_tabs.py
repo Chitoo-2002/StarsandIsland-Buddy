@@ -760,7 +760,7 @@ class ProductionTab:
         self.bom_right_clicked_item = "" 
         
         # 🌟 核心引擎数据：记录用户临时录入的已有库存
-        self.temp_inventory = {} 
+        self.temp_inventory = self.dm.data.setdefault("inventory", {})
 
         self.frame = tk.Frame(parent, bg="white")
         self.frame.pack(fill="both", expand=True)
@@ -1164,7 +1164,6 @@ class ProductionTab:
         except: return messagebox.showerror("错误", "需求总数必须是纯数字！")
 
         # ================= 🌟 1. 视角冻结：记录刷新前的树状图状态 =================
-        # 判断是否是在同一产物下更新数据（比如改了库存），如果是，则拦截并冻结视角
         is_same_target = getattr(self, "last_rendered_target", "") == target
         is_update = bool(self.tv_guide.get_children()) and is_same_target
         
@@ -1172,7 +1171,6 @@ class ProductionTab:
         guide_expanded, route_expanded = set(), set()
 
         def get_node_path(tv, node):
-            """获取节点的层级路径，作为唯一标识符"""
             path = []
             curr = node
             while curr:
@@ -1182,12 +1180,10 @@ class ProductionTab:
             return tuple(reversed(path))
 
         if is_update:
-            # 记录滚动条坐标
             guide_y = self.tv_guide.yview()
             route_y = self.tv_route.yview()
             route_x = self.tv_route.xview()
 
-            # 扫描并记录所有被展开的节点
             def capture_expanded(tv):
                 expanded = set()
                 def traverse(node):
@@ -1210,32 +1206,12 @@ class ProductionTab:
         self.item_consumers = {}
         self.unverified_items = set()
         
-        # ================= 🌟 制造冲销算法 (计算反向消耗) =================
-        self.consumed_inv = {}
-        recipes = self.dm.data.get("recipes", {})
-        
-        # 1. 扫描所有填写了“制造增量”的产物，扣减其所需底料
-        for item, data in self.temp_inventory.items():
-            if not isinstance(data, dict): continue
-            craft_qty = data.get("crafted", 0)
-            if craft_qty > 0 and item in recipes:
-                for mat, mat_qty in recipes[item].get("materials", {}).items():
-                    self.consumed_inv[mat] = self.consumed_inv.get(mat, 0) + craft_qty * mat_qty
-
-        # 2. 计算每个物品最终用于抵扣的【有效库存】 (仓库存量 + 制造增量 - 制造消耗)
-        self.effective_inv = {}
-        for item in set(self.temp_inventory.keys()).union(self.consumed_inv.keys()):
-            data = self.temp_inventory.get(item, {})
-            base = data.get("base", 0) if isinstance(data, dict) else data
-            crafted = data.get("crafted", 0) if isinstance(data, dict) else 0
-            cons = self.consumed_inv.get(item, 0)
-            # 有效库存不能为负，最多扣到 0
-            self.effective_inv[item] = max(base + crafted - cons, 0)
-
-        # 🌟 建立运算沙箱，使用冲销后的有效库存！
-        self.working_inv = self.effective_inv.copy()
+        # ================= 🌟 极简运算沙箱 =================
+        # 移除了所有复杂的制造冲销算法，因为 temp_inventory 现在已经是净值了！
+        self.working_inv = self.temp_inventory.copy()
         
         self._calc_totals_and_consumers(target, total_qty, set(), consumer=None)
+        recipes = self.dm.data.get("recipes", {})
 
         self.level_memo = {}
         for item in self.flat_totals.keys():
@@ -1249,7 +1225,8 @@ class ProductionTab:
             steps_data[lvl].append((item, qty))
 
         # ================= 🌟 渲染指南树 =================
-        used_inv = {k: self.effective_inv[k] - self.working_inv[k] for k in self.effective_inv if self.effective_inv[k] > self.working_inv[k]}
+        # 恢复使用 temp_inventory 计算消耗
+        used_inv = {k: self.temp_inventory[k] - self.working_inv[k] for k in self.temp_inventory if self.temp_inventory[k] > self.working_inv[k]}
         if used_inv:
             inv_node = self.tv_guide.insert("", "end", text="📦 直接调取已有库存 (免加工)", tags=("inventory",))
             for k, v in used_inv.items():
@@ -1285,14 +1262,15 @@ class ProductionTab:
                         levels_fmt = ", ".join(map(str, step_numbers))
                         usage_str = f"   ➡️ 存入仓库 (将于第 {levels_fmt} 步使用)"
 
-                # 🌟 应用智能库存标签
+                # 应用单数字版的极简库存标签
                 inv_mark = self.get_inv_mark(item)
                 self.tv_guide.insert(node_step, "end", text=f" ▪ {item}{inv_mark}   加工 x {qty_fmt}   {status}{usage_str}", values=(item,), tags=(tag,))
             
             if not is_update: self.tv_guide.item(node_step, open=True)
 
         # ================= 🌟 渲染路线树 =================
-        self.route_working_inv = self.effective_inv.copy()
+        # 恢复使用 temp_inventory 传给路线图沙箱
+        self.route_working_inv = self.temp_inventory.copy()
         self.insert_bom_node("", target, total_qty, set())
 
         # ================= 🌟 2. 视角恢复：无缝衔接刚才的视野 =================
@@ -1300,7 +1278,6 @@ class ProductionTab:
             def restore_expanded(tv, expanded_set):
                 def traverse(node):
                     path_sig = get_node_path(tv, node)
-                    # 如果之前是展开的，恢复展开；如果之前被手动收起了，强行压回去
                     if path_sig in expanded_set:
                         tv.item(node, open=True)
                     else:
@@ -1313,12 +1290,10 @@ class ProductionTab:
             restore_expanded(self.tv_guide, guide_expanded)
             restore_expanded(self.tv_route, route_expanded)
 
-            # 延迟 10 毫秒恢复滚动条，等待 Tkinter 底层渲染完树的几何高度
             self.app.after(10, lambda: self.tv_guide.yview_moveto(guide_y[0]))
             self.app.after(10, lambda: self.tv_route.yview_moveto(route_y[0]))
             self.app.after(10, lambda: self.tv_route.xview_moveto(route_x[0]))
             
-        # 记录本次成功渲染的目标，为下一次的比对留存依据
         self.last_rendered_target = target
     def insert_bom_node(self, parent_id, item_name, required_qty, path_set):
         recipes = self.dm.data.get("recipes", {})
@@ -1533,51 +1508,31 @@ class ProductionTab:
             self.tv_route.item(item, open=expand)
 
     # ================= 🌟 历史快照辅助函数 (新增) =================
-    def save_current_state(self):
-        """将当前的产物目标和临时库存，打包存入当前历史节点"""
-        if 0 <= self.history_idx < len(self.history):
-            self.history[self.history_idx] = {
-                "target": self.var_target_product.get(),
-                "inventory": self.temp_inventory.copy() # 深拷贝当前库存状态
-            }
+    # (可以把 save_current_state 整个删掉了，已经不再需要它了)
 
-    # ================= 🌟 重构：自带快照记忆的历史记录 =================
     def history_back(self):
         if self.history_idx > 0:
-            self.save_current_state() # 走之前，保存当前页面的库存状态
             self.history_idx -= 1
-            
-            # 读取上一个历史快照
-            state = self.history[self.history_idx]
-            self.var_target_product.set(state["target"])
-            self.temp_inventory = state["inventory"].copy() # 恢复当时的库存
+            self.var_target_product.set(self.history[self.history_idx])
             self.generate_bom()
 
     def history_forward(self):
         if self.history_idx < len(self.history) - 1:
-            self.save_current_state() # 走之前，保存当前状态
             self.history_idx += 1
-            
-            # 读取下一个历史快照
-            state = self.history[self.history_idx]
-            self.var_target_product.set(state["target"])
-            self.temp_inventory = state["inventory"].copy() # 恢复当时的库存
+            self.var_target_product.set(self.history[self.history_idx])
             self.generate_bom()
 
     def _set_target_internal(self, name):
-        """核心目标切换函数，处理历史记录的覆盖与库存重置"""
+        """核心目标切换：只管导航，绝不清空全局仓库！"""
         if not name or "请从右侧库中选择" in name: return
         
-        self.save_current_state() # 保存切走前的旧状态
-        self.history = self.history[:self.history_idx + 1] # 砍掉未来的历史
-        
-        # 只要点击了新目标，或者是从库里重新点击了当前目标，都视为“开启全新推演”，清空库存！
-        if not self.history or self.history[-1]["target"] != name:
-            self.history.append({"target": name, "inventory": {}})
+        self.history = self.history[:self.history_idx + 1]
+        if not self.history or self.history[-1] != name:
+            self.history.append(name)
             self.history_idx += 1
             
         self.var_target_product.set(name)
-        self.temp_inventory = {} # 🌟 核心：切换新产物时，临时库存归零
+        # 🌟 此处彻底删除了 self.temp_inventory = {}，保证仓库数据永不丢失
         self.generate_bom()
 
     def set_as_target(self):
@@ -1599,9 +1554,10 @@ class ProductionTab:
         return "break"
     # ================= 🌟 终极版 MRP 库存管理 =================
     def clear_inventory(self):
-        """清空所有临时库存并重新计算"""
+        """清空所有库存并保存"""
         if not self.temp_inventory: return
         self.temp_inventory.clear()
+        self.dm.save_data() # 🌟 立即持久化存盘
         self.generate_bom()
 
     def set_inventory_for_item(self, item_name):
@@ -1610,33 +1566,14 @@ class ProductionTab:
         self.open_inventory_popup(x, y, item_name)
 
     def get_inv_mark(self, item_name):
-        """生成如 '📦[3+20]' 或 '📦[100-20]' 的智能库存标记"""
+        """生成极简库存标记"""
         if item_name not in self.temp_inventory: return ""
-        
-        data = self.temp_inventory[item_name]
-        # 兼容旧版的数字格式，防报错
-        base = data.get("base", 0) if isinstance(data, dict) else data
-        crafted = data.get("crafted", 0) if isinstance(data, dict) else 0
-        cons = self.consumed_inv.get(item_name, 0)
-        
-        b_fmt = int(base) if float(base).is_integer() else base
-        c_fmt = int(crafted) if float(crafted).is_integer() else crafted
-        cons_fmt = int(cons) if float(cons).is_integer() else cons
-        
-        parts = []
-        if base > 0: parts.append(str(b_fmt))
-        if crafted > 0: parts.append(f"+{c_fmt}")
-        if cons > 0: parts.append(f"-{cons_fmt}")
-        
-        if not parts: return ""
-        res = "".join(parts)
-        if res.startswith("+"): res = res[1:] # 如果只有制造增量，去掉最前面的 +
-        return f" 📦[{res}]"
+        val = self.temp_inventory[item_name]
+        v_fmt = int(val) if float(val).is_integer() else val
+        return f" 📦[库存:{v_fmt}]"
 
     def open_inventory_popup(self, event_x, event_y, item_name):
-        """🌟 悬浮双轨输入法：极简、智能锁定、失去焦点自动保存"""
-        
-        # 防止手快点出多个弹窗
+        """🌟 悬浮双轨输入法：事件结算型"""
         if hasattr(self, "_inv_popup") and self._inv_popup and self._inv_popup.winfo_exists():
             self._inv_popup.destroy()
             
@@ -1647,16 +1584,14 @@ class ProductionTab:
         win_edit.attributes("-topmost", True)
         win_edit.configure(bg="#f8f9fa", bd=1, relief="solid", padx=8, pady=8)
         
-        # 🌟 1. 去掉多余标题，行号全面上移
-        tk.Label(win_edit, text="仓库存量:", bg="#f8f9fa", font=("微软雅黑", 9)).grid(row=0, column=0, sticky="e", pady=2)
+        tk.Label(win_edit, text="当前库存:", bg="#f8f9fa", font=("微软雅黑", 9)).grid(row=0, column=0, sticky="e", pady=2)
         ent_base = ttk.Entry(win_edit, width=8, justify="center")
         ent_base.grid(row=0, column=1, pady=2, padx=5)
         
-        tk.Label(win_edit, text="制造增量:", bg="#f8f9fa", font=("微软雅黑", 9)).grid(row=1, column=0, sticky="e", pady=2)
+        tk.Label(win_edit, text="制造/拆解(增减量):", bg="#f8f9fa", font=("微软雅黑", 9)).grid(row=1, column=0, sticky="e", pady=2)
         ent_craft = ttk.Entry(win_edit, width=8, justify="center")
         ent_craft.grid(row=1, column=1, pady=2, padx=5)
         
-        # 🌟 2. 智能判断：如果配方本里没有它，或者它根本不需要任何材料，制造框变灰并锁定
         recipes = self.dm.data.get("recipes", {})
         is_craftable = item_name in recipes and len(recipes[item_name].get("materials", {})) > 0
         
@@ -1664,39 +1599,54 @@ class ProductionTab:
             ent_craft.insert(0, "-")
             ent_craft.configure(state="disabled")
         
-        # 回显当前数据
-        curr = self.temp_inventory.get(item_name, {})
-        if isinstance(curr, (int, float)): curr = {"base": curr, "crafted": 0}
-        
-        if curr.get("base", 0) > 0: 
-            ent_base.insert(0, str(curr["base"]))
-        if is_craftable and curr.get("crafted", 0) > 0: 
-            ent_craft.insert(0, str(curr["crafted"]))
+        # 只回显绝对库存量，增减量永远为空（等待当次输入）
+        curr_inv = self.temp_inventory.get(item_name, 0.0)
+        if curr_inv > 0: 
+            ent_base.insert(0, str(int(curr_inv) if float(curr_inv).is_integer() else curr_inv))
         
         ent_base.focus()
-        ent_base.select_range(0, tk.END) # 自动全选方便直接覆盖
+        ent_base.select_range(0, tk.END)
         
         def commit(e=None):
-            # 加锁，防止重复执行提交导致多次重绘
             if getattr(win_edit, "_committed", False): return
             win_edit._committed = True
             
             try:
-                b_val = float(ent_base.get().strip() or 0)
-                # 如果不可合成，制造量强制为 0
-                c_val = float(ent_craft.get().strip() or 0) if is_craftable else 0.0
+                b_str = ent_base.get().strip()
+                c_str = ent_craft.get().strip()
                 
-                old = self.temp_inventory.get(item_name, {})
-                old_b = old.get("base", 0) if isinstance(old, dict) else old
-                old_c = old.get("crafted", 0) if isinstance(old, dict) else 0
+                b_val = float(b_str) if b_str else None
+                c_val = float(c_str) if c_str and is_craftable else 0.0
                 
-                # 数据变动才重绘
-                if b_val != old_b or c_val != old_c:
-                    if b_val <= 0 and c_val <= 0:
-                        self.temp_inventory.pop(item_name, None)
-                    else:
-                        self.temp_inventory[item_name] = {"base": b_val, "crafted": c_val}
-                    self.save_current_state()
+                changed = False
+                
+                # 1. 绝对库存修改覆盖
+                if b_val is not None and b_val != curr_inv:
+                    self.temp_inventory[item_name] = b_val
+                    changed = True
+                    
+                # 2. 制造/拆解事件结算 (连带扣减底料)
+                if c_val != 0.0:
+                    current_base = self.temp_inventory.get(item_name, 0.0)
+                    # 产物自身增加或减少
+                    self.temp_inventory[item_name] = max(0.0, current_base + c_val)
+                    
+                    # 底料按比例扣除(c_val为正)或退还(c_val为负)
+                    mats = recipes[item_name].get("materials", {})
+                    for mat, mat_qty in mats.items():
+                        mat_curr = self.temp_inventory.get(mat, 0.0)
+                        # 如果合成，减去材料；如果输入负数(拆解)，负负得正，增加材料
+                        new_mat_val = mat_curr - (c_val * mat_qty)
+                        self.temp_inventory[mat] = max(0.0, new_mat_val)
+                        
+                    changed = True
+                
+                # 清理掉库存为 0 的垃圾数据
+                keys_to_del = [k for k, v in self.temp_inventory.items() if v <= 0]
+                for k in keys_to_del: del self.temp_inventory[k]
+                
+                if changed:
+                    self.dm.save_data() # 🌟 库存一变，立刻写进硬盘！
                     self.generate_bom()
             except ValueError: pass
             
@@ -1706,17 +1656,13 @@ class ProductionTab:
             win_edit._committed = True
             win_edit.destroy()
 
-        # 绑定快捷键
         win_edit.bind("<Return>", commit)
         win_edit.bind("<Escape>", cancel)
         
-        # 🌟 3. 去掉保存按钮，改为点击外部区域自动保存
         def close_if_lost_focus(e=None):
             if getattr(win_edit, "_committed", False): return
-            # 判断焦点是否真的离开了这个小窗口
             focused = win_edit.focus_get()
             if focused is None or focused.winfo_toplevel() != win_edit:
                 commit()
                 
-        # 延迟 100 毫秒检测焦点，防止在两个输入框之间切换时误判
         win_edit.bind("<FocusOut>", lambda e: win_edit.after(100, close_if_lost_focus))

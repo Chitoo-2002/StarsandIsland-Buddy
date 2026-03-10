@@ -1,6 +1,11 @@
 import json, os
 import config
-
+from tkinter import messagebox # 需要用它来弹出恢复出厂设置的提示
+# 尝试导入默认出厂数据（如果找不到，说明还没跑过那个生成脚本，就不管它）
+try:
+    from default_data import DEFAULT_JSON_DATA
+except ImportError:
+    DEFAULT_JSON_DATA = None
 class DataManager:
     def __init__(self):
         default_ferts = [
@@ -50,35 +55,72 @@ class DataManager:
             config.COLUMN_GROUPS[parent_key] = children
 
     def load_data(self):
+        # ================= 🌟 恢复出厂设置逻辑 =================
         if not os.path.exists(config.DATA_FILE): 
-            self.rebuild_dynamic_columns()
-            return
-        try:
-            with open(config.DATA_FILE, 'r', encoding='utf-8') as f:
-                loaded = json.load(f)
-                # 1. 刷新基础设置
-                self.data["settings"].update(loaded.get("settings", {}))
-                # 2. 刷新作物与索引
-                self.data["crops"] = loaded.get("crops", [])
-                for i, c in enumerate(self.data["crops"]): 
-                    c.setdefault("_db_index", i)
-                # 👇 新增：读取生产配方链数据
-                self.data["recipes"] = loaded.get("recipes", {})
+            if DEFAULT_JSON_DATA is not None:
+                print(f"[DEBUG] 找不到存档文件，正在自动恢复出厂设置并生成 {config.DATA_FILE}...")
                 
-                # 3. 核心：强制同步报表与对比页的列宽缓存
-                self.runtime_col_widths = loaded.get("tksheet_widths", {}) 
-                self.data["cmp_tksheet_widths"] = loaded.get("cmp_tksheet_widths", {})
-                # 4. 刷新列顺序与自定义名称
-                self.data["display_columns"] = loaded.get("display_columns", self.data["display_columns"])
-                self.data["custom_column_names"] = loaded.get("custom_column_names", {})
-                # 5. 刷新肥料数据
-                if "fertilizers" in loaded:
-                    self.data["fertilizers"] = loaded["fertilizers"]                
+                # 将 default_data.py 里的字典深拷贝过来，防止污染原字典
+                import copy
+                loaded = copy.deepcopy(DEFAULT_JSON_DATA)
+                
+                # 提示玩家
+                # 这里做了一个小延迟，确保如果主窗口正在创建，弹窗能正常显示
+                def show_restore_msg():
+                    try:
+                        messagebox.showinfo("🌟 欢迎使用 / 恢复出厂设置", f"未检测到本地存档数据！\n\n已自动为您加载星砂岛小助手的默认数据，并生成了新的存档文件：\n{config.DATA_FILE}\n\n💡提示：如果以后想还原所有数据，只需将该文件删除后重启程序即可。")
+                    except: pass
+                import tkinter as tk
+                tk._default_root.after(500, show_restore_msg) if tk._default_root else None
+                
+            else:
+                # 极端情况：连出厂脚本都没跑过，只能走最原始的空表逻辑
                 self.rebuild_dynamic_columns()
-                valid_ids = set(config.ALL_COLS.keys()) | set(config.DB_KEY_MAP.keys()) | {"process_status", "best_profit", "best_strategy", "verified", "type"}
-                self.data["display_columns"] = [c for c in self.data["display_columns"] if c in valid_ids]
+                return
+        # =======================================================
+        else:
+            # 正常从本地 JSON 存档读取
+            try:
+                with open(config.DATA_FILE, 'r', encoding='utf-8') as f:
+                    loaded = json.load(f)
+            except Exception as e:
+                self.debug_print(f"[DEBUG] ❌ 加载失败，文件可能已损坏: {e}")
+                return
+                
+        # ================= 数据载入与重构流程 =================
+        try:
+            # 1. 刷新基础设置
+            self.data["settings"].update(loaded.get("settings", {}))
+            # 2. 刷新作物与索引
+            self.data["crops"] = loaded.get("crops", [])
+            for i, c in enumerate(self.data["crops"]): 
+                c.setdefault("_db_index", i)
+            # 3. 读取生产配方链数据
+            self.data["recipes"] = loaded.get("recipes", {})
+            # 🌟 新增：读取持久化全局仓库
+            self.data["inventory"] = loaded.get("inventory", {})
+            
+            # 4. 核心：强制同步报表与对比页的列宽缓存
+            self.runtime_col_widths = loaded.get("tksheet_widths", {}) 
+            self.data["cmp_tksheet_widths"] = loaded.get("cmp_tksheet_widths", {})
+            # 5. 刷新列顺序与自定义名称
+            self.data["display_columns"] = loaded.get("display_columns", self.data["display_columns"])
+            self.data["custom_column_names"] = loaded.get("custom_column_names", {})
+            # 6. 刷新肥料数据
+            if "fertilizers" in loaded:
+                self.data["fertilizers"] = loaded["fertilizers"]                
+                
+            self.rebuild_dynamic_columns()
+            
+            valid_ids = set(config.ALL_COLS.keys()) | set(config.DB_KEY_MAP.keys()) | {"process_status", "best_profit", "best_strategy", "verified", "type"}
+            self.data["display_columns"] = [c for c in self.data["display_columns"] if c in valid_ids]
+            
+            # 🌟 如果是刚刚恢复出厂设置的，立刻存一次盘，把 JSON 文件真正在硬盘上写出来
+            if not os.path.exists(config.DATA_FILE) and DEFAULT_JSON_DATA is not None:
+                self.save_data()
+                
         except Exception as e: 
-            self.debug_print(f"[DEBUG] ❌ 加载失败: {e}")
+            self.debug_print(f"[DEBUG] ❌ 数据重构失败: {e}")
 
     def save_data(self, report_sheet=None):
         try:
