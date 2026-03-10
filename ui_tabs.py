@@ -726,114 +726,107 @@ class ProductionTab:
     def __init__(self, parent, app, data_manager):
         self.app = app
         self.dm = data_manager
-        
-        if "recipes" not in self.dm.data:
-            self.dm.data["recipes"] = {}
+        if "recipes" not in self.dm.data: self.dm.data["recipes"] = {}
 
-        # 状态变量
-        self.sort_desc = True # 默认按等级降序
-        self.current_library_names = [] # 记录当前列表框中对应的真实产物名称
-        self.var_target_product = tk.StringVar(value="[请从右侧库中选择]") # 当前锁定的目标
-
-        # 🌟 新增：历史记录栈与左侧菜单记忆
+        self.sort_desc = True 
+        self.current_library_names = [] 
+        self.var_target_product = tk.StringVar(value="[请从右侧库中选择]") 
         self.history = []     
         self.history_idx = -1 
-        self.bom_right_clicked_item = ""
+        self.bom_right_clicked_item = "" 
 
-        # 页面主框架
         self.frame = tk.Frame(parent, bg="white")
         self.frame.pack(fill="both", expand=True)
-        
-        # 🌟 引入 PanedWindow (可拖拽分割线面板)
-        self.paned = ttk.PanedWindow(self.frame, orient=tk.HORIZONTAL)
-        self.paned.pack(fill="both", expand=True, padx=10, pady=10)
-        
-        # 创建左右面板，并加入 PanedWindow
-        left_frame = tk.Frame(self.paned, bg="white")
-        right_frame = tk.Frame(self.paned, bg="#f5f5f7")
-        
-        # 🌟 设置初始宽度权重，左边占大头 (weight=3)，右边占小头 (weight=1)
-        self.paned.add(left_frame, weight=3)
-        self.paned.add(right_frame, weight=1)
-        # 注意：这里去掉了原有的 pack_propagate(False)，让分割线完全接管宽度控制
 
-        # ================= 左侧：BOM 整体可视化 =================
-        tk.Label(left_frame, text="📊 生产链图纸分析", font=("微软雅黑", 12, "bold"), bg="white").pack(anchor="w", pady=(0, 10))
+        # ================= 顶部全局控制区 =================
+        f_top = tk.Frame(self.frame, bg="white")
+        f_top.pack(fill="x", padx=15, pady=(15, 5))
         
-        f_top = tk.Frame(left_frame, bg="white")
-        f_top.pack(fill="x", pady=5)
-        
+        tk.Label(f_top, text="📊 生产链图纸分析", font=("微软雅黑", 12, "bold"), bg="white").pack(side="left", padx=(0, 20))
         tk.Label(f_top, text="当前目标:", bg="white").pack(side="left")
-        # 🌟 新增：前进后退按钮
-        ttk.Button(f_top, text="◀", width=4, command=self.history_back).pack(side="left", padx=(5,0))
-        ttk.Button(f_top, text="▶", width=4, command=self.history_forward).pack(side="left", padx=(0,5))
-        
+        ttk.Button(f_top, text="◀", width=3, command=self.history_back).pack(side="left", padx=(5,0), ipadx=2)
+        ttk.Button(f_top, text="▶", width=3, command=self.history_forward).pack(side="left", padx=(0,5), ipadx=2)
         tk.Label(f_top, textvariable=self.var_target_product, font=("微软雅黑", 11, "bold"), fg="#1565c0", bg="white").pack(side="left", padx=5)
         
         tk.Label(f_top, text="需求总数:", bg="white").pack(side="left", padx=(15, 2))
         self.ent_target_qty = ttk.Entry(f_top, width=6)
         self.ent_target_qty.insert(0, "1")
         self.ent_target_qty.pack(side="left", padx=5)
-        
-        ttk.Button(f_top, text="🚀 重新生成物料清单", command=self.generate_bom).pack(side="left", padx=10)
-        tk.Label(f_top, text="💡 在树状图中双击展开，右键调出操作菜单", fg="#888", bg="white").pack(side="left", padx=10)
+        ttk.Button(f_top, text="🚀 重新生成", command=self.generate_bom).pack(side="left", padx=10)
+        tk.Label(f_top, text="💡 提示: 双击文字编辑配方，右键调出菜单，左右面板边界可自由拖拽", fg="#888", bg="white").pack(side="left", padx=10)
 
-        # BOM 树状图
-        self.tv = ttk.Treeview(left_frame, show="tree", height=20)
-        self.tv.pack(fill="both", expand=True)
-        # 🌟 修改：同时绑定右键和左键双击
-        self.tv.bind("<Button-3>", self.on_right_click_tree)
-        self.tv.bind("<Double-Button-1>", self.on_double_click_tree)
-        
-        self.tv.tag_configure("verified", foreground="#2e7d32") 
-        self.tv.tag_configure("unverified", foreground="#d84315", font=("微软雅黑", 10, "bold")) 
-        self.tv.tag_configure("root_sum", foreground="#1565c0", font=("微软雅黑", 11, "bold"))
+        # ================= 三栏自由拖拽面板 =================
+        self.paned = ttk.PanedWindow(self.frame, orient=tk.HORIZONTAL)
+        self.paned.pack(fill="both", expand=True, padx=10, pady=(0, 10))
 
-        # ================= 右侧：产物管理总库 =================
-        tk.Label(right_frame, text="📦 产物管理库", font=("微软雅黑", 12, "bold"), bg="#f5f5f7").pack(anchor="w", pady=(0, 10))
-        
-        f_search = tk.Frame(right_frame, bg="#f5f5f7")
-        f_search.pack(fill="x", pady=5)
-        tk.Label(f_search, text="🔍 搜索:", bg="#f5f5f7").pack(side="left")
-        
-        # 🌟 关键修复：先把固定尺寸的按钮 pack 到右边，保住它的绝对生存空间
-        # 移除了死板的 width=5，让按钮根据文字自动适配最佳宽度
-        ttk.Button(f_search, text="↕等级", command=self.toggle_sort).pack(side="right", padx=(0, 2))
-        
-        # 🌟 然后再把具有伸缩属性的输入框 pack 进去填满剩下的空间
+        # 1. 强行设定极小的初始宽度
+        frame_guide = tk.Frame(self.paned, bg="white", width=10)
+        frame_route = tk.Frame(self.paned, bg="white", width=10)
+        frame_lib = tk.Frame(self.paned, bg="#f5f5f7", width=10)
+
+        # 🌟 2. 终极绝杀：禁止 Frame 被内部的树状图和列表反向撑大！
+        frame_guide.pack_propagate(False)
+        frame_route.pack_propagate(False)
+        frame_lib.pack_propagate(False)
+
+        # 3. 现在 4:4:1 将接管 99% 的屏幕宽度完美分配！
+        self.paned.add(frame_guide, weight=8)
+        self.paned.add(frame_route, weight=8)
+        self.paned.add(frame_lib, weight=3)
+
+        # --- 第一栏：行动指南 ---
+        tk.Label(frame_guide, text="🛒 生产行动指南", font=("微软雅黑", 11, "bold"), fg="#1565c0", bg="white").pack(anchor="w", pady=5, padx=5)
+        self.tv_guide = ttk.Treeview(frame_guide, show="tree")
+        self.tv_guide.pack(fill="both", expand=True)
+
+        # --- 第二栏：路线图 ---
+        tk.Label(frame_route, text="🗺️ 生产流程路线图", font=("微软雅黑", 11, "bold"), fg="#1565c0", bg="white").pack(anchor="w", pady=5, padx=5)
+        self.tv_route = ttk.Treeview(frame_route, show="tree")
+        self.tv_route.pack(fill="both", expand=True)
+
+        # 批量绑定两个树状图的事件和样式
+        for tv in (self.tv_guide, self.tv_route):
+            tv.bind("<Button-3>", self.on_right_click_tree)
+            tv.bind("<Double-Button-1>", self.on_double_click_tree)
+            tv.tag_configure("verified", foreground="#2e7d32", font=("微软雅黑", 11,'bold')) 
+            tv.tag_configure("unverified", foreground="#d84315", font=("微软雅黑", 10, "bold")) 
+            tv.tag_configure("root_sum", foreground="#1565c0", font=("微软雅黑", 11, "bold"))
+
+        # --- 第三栏：产物库 ---
+        tk.Label(frame_lib, text="📦 产物管理库", font=("微软雅黑", 11, "bold"), bg="#f5f5f7").pack(anchor="w", pady=(5, 5), padx=5)
+        f_search = tk.Frame(frame_lib, bg="#f5f5f7")
+        f_search.pack(fill="x", pady=2, padx=5)
+        tk.Label(f_search, text="🔍搜索:", bg="#f5f5f7").pack(side="left")
+        ttk.Button(f_search, text="↕等级", command=self.toggle_sort).pack(side="right", padx=(2, 0))
         self.ent_search = ttk.Entry(f_search)
-        self.ent_search.pack(side="left", fill="x", expand=True, padx=(5, 5))
-        self.ent_search.bind("<KeyRelease>", lambda e: self.refresh_library())
+        self.ent_search.pack(side="left", fill="x", expand=True, padx=(2, 0))
+        self.ent_search.bind("<KeyRelease>", lambda e: self.refresh_library()) 
 
-        self.lb_library = tk.Listbox(right_frame, font=("微软雅黑", 12), selectmode="browse")
-        self.lb_library.pack(fill="both", expand=True, pady=10)
-        # ① 双击改为：设为目标并计算
+        self.lb_library = tk.Listbox(frame_lib, font=("微软雅黑", 10), selectmode="browse")
+        self.lb_library.pack(fill="both", expand=True, pady=5, padx=5)
         self.lb_library.bind("<Double-Button-1>", lambda e: self.set_as_target()) 
-        # ③ 绑定右键菜单
         self.lb_library.bind("<Button-3>", self.show_library_context_menu)
 
-        # 构建产物库右键菜单
         self.menu_lib = tk.Menu(self.frame, tearoff=0)
         self.menu_lib.add_command(label="🎯 设为目标并计算", command=self.set_as_target)
         self.menu_lib.add_command(label="✏️ 编辑该配方", command=self.edit_selected_recipe)
         self.menu_lib.add_command(label="🔄 切换核对状态", command=self.toggle_verify_status)
+        self.menu_lib.add_command(label="🔍 查看可合成产物 (用途)", command=self.show_usages_for_library_item)
         self.menu_lib.add_separator()
         self.menu_lib.add_command(label="🗑️ 彻底删除", command=self.delete_selected_recipe)
-        self.menu_lib.add_command(label="🔍 查看可合成产物 (用途)", command=self.show_usages_for_library_item)
 
-        f_btns1 = tk.Frame(right_frame, bg="#f5f5f7")
-        f_btns1.pack(fill="x", pady=2)
-        ttk.Button(f_btns1, text="➕ 新增基础产物", command=lambda: self.open_recipe_editor("")).pack(side="left", fill="x", expand=True)
-
-        # 🌟 新增：左侧 BOM 树专属右键菜单
         self.menu_bom = tk.Menu(self.frame, tearoff=0)
         self.menu_bom.add_command(label="🎯 设为目标并计算", command=lambda: self._set_target_internal(self.bom_right_clicked_item))
         self.menu_bom.add_command(label="✏️ 编辑该配方", command=lambda: self.open_recipe_editor(self.bom_right_clicked_item))
         self.menu_bom.add_command(label="🔄 切换核对状态", command=self._toggle_bom_verify)
+        self.menu_bom.add_command(label="🔍 查看可合成产物 (用途)", command=self.show_usages_for_bom_item)
         self.menu_bom.add_separator()
         self.menu_bom.add_command(label="🗑️ 彻底删除", command=self._delete_bom_item)
-        self.menu_bom.add_command(label="🔍 查看可合成产物 (用途)", command=self.show_usages_for_bom_item)
-        # 初始化加载库
+
+        f_btns1 = tk.Frame(frame_lib, bg="#f5f5f7")
+        f_btns1.pack(fill="x", pady=5, padx=5)
+        ttk.Button(f_btns1, text="➕ 新增基础产物", command=lambda: self.open_recipe_editor("")).pack(fill="x")
+
         self.refresh_library()
 
     # 🌟 新增：以下这一整块都是配合历史记录和新菜单的功能函数
@@ -1057,109 +1050,167 @@ class ProductionTab:
         ttk.Button(f_main, text="💾 保存配方并关闭", command=save_and_close).pack(fill="x", pady=3)
         refresh_local_list()
 
-    # --- BOM 分析引擎逻辑 ---
-    def _calc_flat_totals(self, item_name, qty, path_set):
+    def _calc_totals_and_consumers(self, item_name, qty, path_set, consumer=None):
+        """核心算法 1：递归统计总数，并记录每个物品被谁消耗（用于提示何时使用）"""
         if item_name in path_set: return 
+        
         self.flat_totals[item_name] = self.flat_totals.get(item_name, 0) + qty
+        
+        # 记录消费者，从而推断它在第几步被使用
+        if consumer:
+            if item_name not in self.item_consumers:
+                self.item_consumers[item_name] = set()
+            self.item_consumers[item_name].add(consumer)
+
         recipes = self.dm.data.get("recipes", {})
         is_known = item_name in recipes
         if not is_known or not recipes[item_name].get("verified", False):
             self.unverified_items.add(item_name)
+            
         if is_known:
             new_path = path_set.copy()
             new_path.add(item_name)
             for mat_name, u_qty in recipes[item_name].get("materials", {}).items():
-                self._calc_flat_totals(mat_name, qty * u_qty, new_path)
+                self._calc_totals_and_consumers(mat_name, qty * u_qty, new_path, consumer=item_name)
+
+    def _get_bottom_up_level(self, item_name, recipes, memo=None, path=None):
+        """核心算法 2：自底向上计算绝对阶段。原材=第1步，每往上一层+1步。"""
+        if memo is None: memo = {}
+        if path is None: path = set()
+
+        if item_name in memo: return memo[item_name]
+        if item_name in path: return 1 # 防死循环
+
+        mats = recipes.get(item_name, {}).get("materials", {})
+        if not mats:
+            memo[item_name] = 1 # 底层原材绝对是第 1 步
+            return 1
+
+        path.add(item_name)
+        max_child_lvl = 0
+        for mat in mats:
+            max_child_lvl = max(max_child_lvl, self._get_bottom_up_level(mat, recipes, memo, path))
+        path.remove(item_name)
+
+        memo[item_name] = max_child_lvl + 1
+        return memo[item_name]
 
     def generate_bom(self):
         target = self.var_target_product.get().strip()
         qty_str = self.ent_target_qty.get().strip()
-        self.tv.delete(*self.tv.get_children()) 
+        
+        # 清空两个独立的树
+        self.tv_guide.delete(*self.tv_guide.get_children()) 
+        self.tv_route.delete(*self.tv_route.get_children()) 
         
         if "请从右侧库中选择" in target or not target: return
-        
         try: total_qty = float(qty_str)
         except: return messagebox.showerror("错误", "需求总数必须是纯数字！")
 
         self.flat_totals = {}
+        self.item_consumers = {}
         self.unverified_items = set()
-        self._calc_flat_totals(target, total_qty, set())
-
-        node_sum = self.tv.insert("", "end", text="🛒 【全局材料总需】 (按等级自动排序合并)", tags=("root_sum",))
         
-        # 🌟 修改：先收集所有材料并计算等级，然后进行排序
-        sorted_totals = []
+        self._calc_totals_and_consumers(target, total_qty, set(), consumer=None)
+        recipes = self.dm.data.get("recipes", {})
+
+        self.level_memo = {}
+        for item in self.flat_totals.keys():
+            self._get_bottom_up_level(item, recipes, self.level_memo)
+
+        max_level = self.level_memo.get(target, 1)
+
+        steps_data = {i: [] for i in range(1, max_level + 1)}
         for item, qty in self.flat_totals.items():
-            level = self._calc_item_level(item)
-            sorted_totals.append((item, qty, level))
-            
-        # 🌟 按等级排序（升序：①在最前面），等级相同则按名字排序
-        sorted_totals.sort(key=lambda x: (x[2], x[0]))
+            lvl = self.level_memo[item]
+            steps_data[lvl].append((item, qty))
 
-        # 🌟 遍历排序后的列表插入树状图
-        for item, qty, level in sorted_totals:
-            qty_fmt = int(qty) if qty.is_integer() else qty
-            is_veri = item not in self.unverified_items
+        # ================= 🌟 渲染指南树 (直接插入根节点) =================
+        for lvl in range(1, max_level + 1):
+            if not steps_data[lvl]: continue
             
-            lvl_str = chr(9311 + level) if 1 <= level <= 20 else f"[{level}]"
-            status = "" if is_veri else "❌[缺底层]" 
-            tag = "verified" if is_veri else "unverified"
-            self.tv.insert(node_sum, "end", text=f" ▪ {lvl_str} {item}   x {qty_fmt}   {status}", values=(item,), tags=(tag,))
-        self.tv.item(node_sum, open=True)
+            items_in_step = steps_data[lvl]
+            items_in_step.sort(key=lambda x: x[0])
 
-        node_path = self.tv.insert("", "end", text=f"🗺️ 【{target}】 生产流程路线图", tags=("root_sum",))
-        self.insert_bom_node(node_path, target, total_qty, set())
-        self.tv.item(node_path, open=True)
+            if lvl == 1: step_title = "⛏️ [第 1 步] 准备底层原材"
+            elif lvl == max_level: step_title = f"👑 [第 {lvl} 步] 冲刺最终目标"
+            else: step_title = f"⚙️ [第 {lvl} 步] 合成本级产物"
+
+            # 直接插入，不再需要嵌套在一个无意义的全局父节点下
+            node_step = self.tv_guide.insert("", "end", text=step_title, tags=("root_sum",))
+
+            for item, qty in items_in_step:
+                qty_fmt = int(qty) if qty.is_integer() else qty
+                is_veri = item not in self.unverified_items
+                status = "" if is_veri else " ❌[缺配方/底料]"
+                tag = "verified" if is_veri else "unverified"
+
+                usage_str = ""
+                consumers = self.item_consumers.get(item, set())
+                if consumers:
+                    c_levels = sorted(list(set(self.level_memo[c] for c in consumers)))
+                    distant_uses = [c for c in c_levels if c > lvl + 1]
+                    if distant_uses:
+                        levels_fmt = ", ".join(map(str, c_levels))
+                        usage_str = f"   ➡️ 存入仓库 (将于第 {levels_fmt} 步使用)"
+
+                self.tv_guide.insert(node_step, "end", text=f" ▪ {item}   x {qty_fmt}   {status}{usage_str}", values=(item,), tags=(tag,))
+            self.tv_guide.item(node_step, open=True)
+
+        # ================= 🌟 渲染路线树 (目标产物直接作为根节点) =================
+        self.insert_bom_node("", target, total_qty, set())
+
 
     def insert_bom_node(self, parent_id, item_name, required_qty, path_set):
         recipes = self.dm.data.get("recipes", {})
         qty_fmt = int(required_qty) if required_qty.is_integer() else required_qty
         
         if item_name in path_set:
-            self.tv.insert(parent_id, "end", text=f"⚠️ {item_name}   x {qty_fmt}   (循环嵌套异常)", values=(item_name,), tags=("unverified",))
+            self.tv_route.insert(parent_id, "end", text=f"⚠️ {item_name}   x {qty_fmt}   (循环嵌套异常)", values=(item_name,), tags=("unverified",))
             return
 
         is_known = item_name in recipes
         is_verified = is_known and recipes[item_name].get("verified", False)
-        
-        # 🌟 新增：等级图标，隐藏已核对
-        level = self._calc_item_level(item_name)
-        lvl_str = chr(9311 + level) if 1 <= level <= 20 else f"[{level}]"
         status_text = "" if is_verified else "  [❌未核对]"
         tag = "verified" if is_verified else "unverified"
-        display_text = f" └─ {lvl_str} {item_name}   x {qty_fmt}{status_text}"
         
-        node_id = self.tv.insert(parent_id, "end", text=display_text, values=(item_name,), tags=(tag,))
+        # 移除了所有杂项前缀，让文本紧贴折叠箭头
+        display_text = f"└─ {item_name}   x {qty_fmt}{status_text}"
+        
+        # 插入独立的 tv_route
+        node_id = self.tv_route.insert(parent_id, "end", text=display_text, values=(item_name,), tags=(tag,))
         
         if is_known:
             new_path = path_set.copy()
             new_path.add(item_name)
             for mat_name, unit_qty in recipes[item_name].get("materials", {}).items():
                 self.insert_bom_node(node_id, mat_name, required_qty * unit_qty, new_path)
-        self.tv.item(node_id, open=True)
-
+                
+        self.tv_route.item(node_id, open=True)
     # 🌟 完全重写：分离右键与双击事件
     def on_right_click_tree(self, event):
-        item_id = self.tv.identify_row(event.y)
+        tv = event.widget # 获取当前点击的是哪个树 (tv_guide 还是 tv_route)
+        item_id = tv.identify_row(event.y)
         if not item_id: return
-        vals = self.tv.item(item_id, "values")
+        vals = tv.item(item_id, "values")
         if not vals: return 
         
         self.bom_right_clicked_item = vals[0]
-        self.tv.selection_set(item_id) # 视觉选中
-        self.menu_bom.tk_popup(event.x_root, event.y_root) # 弹出左侧菜单
+        tv.selection_set(item_id) 
+        self.menu_bom.tk_popup(event.x_root, event.y_root)
 
     def on_double_click_tree(self, event):
-        region = self.tv.identify_region(event.x, event.y)
+        tv = event.widget # 获取当前点击的是哪个树
+        region = tv.identify_region(event.x, event.y)
         if region == "tree": 
-            return # 点了箭头，正常展开/折叠
+            return 
             
-        item_id = self.tv.identify_row(event.y)
+        item_id = tv.identify_row(event.y)
         if not item_id: return
-        vals = self.tv.item(item_id, "values")
+        vals = tv.item(item_id, "values")
         if vals:
-            self.open_recipe_editor(vals[0]) # 双击文字打开编辑
-        return "break" # 阻止文字双击引发的展开/折叠
+            self.open_recipe_editor(vals[0]) 
+        return "break"
     def show_usages_for_library_item(self):
         name = self.get_selected_library_item()
         if name: self._show_usages_dialog(name)
