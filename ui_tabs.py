@@ -1159,22 +1159,83 @@ class ProductionTab:
         target = self.var_target_product.get().strip()
         qty_str = self.ent_target_qty.get().strip()
         
-        self.tv_guide.delete(*self.tv_guide.get_children()) 
-        self.tv_route.delete(*self.tv_route.get_children()) 
-        
         if "请从右侧库中选择" in target or not target: return
         try: total_qty = float(qty_str)
         except: return messagebox.showerror("错误", "需求总数必须是纯数字！")
+
+        # ================= 🌟 1. 视角冻结：记录刷新前的树状图状态 =================
+        # 判断是否是在同一产物下更新数据（比如改了库存），如果是，则拦截并冻结视角
+        is_same_target = getattr(self, "last_rendered_target", "") == target
+        is_update = bool(self.tv_guide.get_children()) and is_same_target
+        
+        guide_y, route_y, route_x = (0.0, 1.0), (0.0, 1.0), (0.0, 1.0)
+        guide_expanded, route_expanded = set(), set()
+
+        def get_node_path(tv, node):
+            """获取节点的层级路径，作为唯一标识符"""
+            path = []
+            curr = node
+            while curr:
+                vals = tv.item(curr, "values")
+                path.append(vals[0] if vals else tv.item(curr, "text"))
+                curr = tv.parent(curr)
+            return tuple(reversed(path))
+
+        if is_update:
+            # 记录滚动条坐标
+            guide_y = self.tv_guide.yview()
+            route_y = self.tv_route.yview()
+            route_x = self.tv_route.xview()
+
+            # 扫描并记录所有被展开的节点
+            def capture_expanded(tv):
+                expanded = set()
+                def traverse(node):
+                    if tv.item(node, "open"):
+                        expanded.add(get_node_path(tv, node))
+                    for child in tv.get_children(node):
+                        traverse(child)
+                for child in tv.get_children(""):
+                    traverse(child)
+                return expanded
+
+            guide_expanded = capture_expanded(self.tv_guide)
+            route_expanded = capture_expanded(self.tv_route)
+
+        # 暴力清空两个独立的树
+        self.tv_guide.delete(*self.tv_guide.get_children()) 
+        self.tv_route.delete(*self.tv_route.get_children()) 
 
         self.flat_totals = {}
         self.item_consumers = {}
         self.unverified_items = set()
         
-        # 🌟 建立运算沙箱：拷贝一份临时库存，避免污染源数据
-        self.working_inv = self.temp_inventory.copy()
+        # ================= 🌟 制造冲销算法 (计算反向消耗) =================
+        self.consumed_inv = {}
+        recipes = self.dm.data.get("recipes", {})
+        
+        # 1. 扫描所有填写了“制造增量”的产物，扣减其所需底料
+        for item, data in self.temp_inventory.items():
+            if not isinstance(data, dict): continue
+            craft_qty = data.get("crafted", 0)
+            if craft_qty > 0 and item in recipes:
+                for mat, mat_qty in recipes[item].get("materials", {}).items():
+                    self.consumed_inv[mat] = self.consumed_inv.get(mat, 0) + craft_qty * mat_qty
+
+        # 2. 计算每个物品最终用于抵扣的【有效库存】 (仓库存量 + 制造增量 - 制造消耗)
+        self.effective_inv = {}
+        for item in set(self.temp_inventory.keys()).union(self.consumed_inv.keys()):
+            data = self.temp_inventory.get(item, {})
+            base = data.get("base", 0) if isinstance(data, dict) else data
+            crafted = data.get("crafted", 0) if isinstance(data, dict) else 0
+            cons = self.consumed_inv.get(item, 0)
+            # 有效库存不能为负，最多扣到 0
+            self.effective_inv[item] = max(base + crafted - cons, 0)
+
+        # 🌟 建立运算沙箱，使用冲销后的有效库存！
+        self.working_inv = self.effective_inv.copy()
         
         self._calc_totals_and_consumers(target, total_qty, set(), consumer=None)
-        recipes = self.dm.data.get("recipes", {})
 
         self.level_memo = {}
         for item in self.flat_totals.keys():
@@ -1187,15 +1248,14 @@ class ProductionTab:
             lvl = self.level_memo[item]
             steps_data[lvl].append((item, qty))
 
-        # ================= 🌟 渲染指南树：新增库存抵扣清单 =================
-        # 对比初始库存和沙箱结算后的库存，算出本次生产到底消耗了哪些存货
-        used_inv = {k: self.temp_inventory[k] - self.working_inv[k] for k in self.temp_inventory if self.temp_inventory[k] > self.working_inv[k]}
+        # ================= 🌟 渲染指南树 =================
+        used_inv = {k: self.effective_inv[k] - self.working_inv[k] for k in self.effective_inv if self.effective_inv[k] > self.working_inv[k]}
         if used_inv:
             inv_node = self.tv_guide.insert("", "end", text="📦 直接调取已有库存 (免加工)", tags=("inventory",))
             for k, v in used_inv.items():
                 v_fmt = int(v) if float(v).is_integer() else v
                 self.tv_guide.insert(inv_node, "end", text=f" ▪ {k}   从库存拿 {v_fmt} 个", values=(k,), tags=("inventory",))
-            self.tv_guide.item(inv_node, open=True)
+            if not is_update: self.tv_guide.item(inv_node, open=True)
 
         for lvl in range(1, max_level + 1):
             if not steps_data[lvl]: continue
@@ -1221,16 +1281,45 @@ class ProductionTab:
                     c_levels = sorted(list(set(self.level_memo[c] for c in consumers)))
                     distant_uses = [c for c in c_levels if c > lvl + 1]
                     if distant_uses:
-                        levels_fmt = ", ".join(map(str, c_levels))
+                        step_numbers = [c - 1 for c in c_levels]
+                        levels_fmt = ", ".join(map(str, step_numbers))
                         usage_str = f"   ➡️ 存入仓库 (将于第 {levels_fmt} 步使用)"
 
-                self.tv_guide.insert(node_step, "end", text=f" ▪ {item}   加工 x {qty_fmt}   {status}{usage_str}", values=(item,), tags=(tag,))
-            self.tv_guide.item(node_step, open=True)
+                # 🌟 应用智能库存标签
+                inv_mark = self.get_inv_mark(item)
+                self.tv_guide.insert(node_step, "end", text=f" ▪ {item}{inv_mark}   加工 x {qty_fmt}   {status}{usage_str}", values=(item,), tags=(tag,))
+            
+            if not is_update: self.tv_guide.item(node_step, open=True)
 
-        # ================= 🌟 渲染路线树：给路线图分配独立的沙箱库存 =================
-        self.route_working_inv = self.temp_inventory.copy()
+        # ================= 🌟 渲染路线树 =================
+        self.route_working_inv = self.effective_inv.copy()
         self.insert_bom_node("", target, total_qty, set())
 
+        # ================= 🌟 2. 视角恢复：无缝衔接刚才的视野 =================
+        if is_update:
+            def restore_expanded(tv, expanded_set):
+                def traverse(node):
+                    path_sig = get_node_path(tv, node)
+                    # 如果之前是展开的，恢复展开；如果之前被手动收起了，强行压回去
+                    if path_sig in expanded_set:
+                        tv.item(node, open=True)
+                    else:
+                        tv.item(node, open=False)
+                    for child in tv.get_children(node):
+                        traverse(child)
+                for child in tv.get_children(""):
+                    traverse(child)
+
+            restore_expanded(self.tv_guide, guide_expanded)
+            restore_expanded(self.tv_route, route_expanded)
+
+            # 延迟 10 毫秒恢复滚动条，等待 Tkinter 底层渲染完树的几何高度
+            self.app.after(10, lambda: self.tv_guide.yview_moveto(guide_y[0]))
+            self.app.after(10, lambda: self.tv_route.yview_moveto(route_y[0]))
+            self.app.after(10, lambda: self.tv_route.xview_moveto(route_x[0]))
+            
+        # 记录本次成功渲染的目标，为下一次的比对留存依据
+        self.last_rendered_target = target
     def insert_bom_node(self, parent_id, item_name, required_qty, path_set):
         recipes = self.dm.data.get("recipes", {})
         req_fmt = int(required_qty) if required_qty.is_integer() else required_qty
@@ -1250,7 +1339,7 @@ class ProductionTab:
         is_known = item_name in recipes
         is_verified = is_known and recipes[item_name].get("verified", False)
         
-        # 🌟 智能动态文本：如果全靠库存，颜色变黄；如果部分靠库存，展示扣减详情
+        # 🌟 智能动态文本：应用冲销标签
         if net_qty <= 0:
             status_text = f"  [📦库存直接满足(消耗{int(deduct) if deduct.is_integer() else deduct})]"
             tag = "inventory"
@@ -1258,10 +1347,13 @@ class ProductionTab:
             status_text = "" if is_verified else "  [❌未核对]"
             if deduct > 0:
                 ded_fmt = int(deduct) if deduct.is_integer() else deduct
-                status_text += f"  [📦已抵扣库存 {ded_fmt}]"
+                status_text += f"  [📦本节点抵扣 {ded_fmt}]"
             tag = "verified" if is_verified else "unverified"
         
-        display_text = f"└─ {item_name}   x {req_fmt}{status_text}"
+        # 应用智能库存标签
+        inv_mark = self.get_inv_mark(item_name)
+        
+        display_text = f"└─ {item_name}{inv_mark}   x {req_fmt}{status_text}"
         node_id = self.tv_route.insert(parent_id, "end", text=display_text, values=(item_name,), tags=(tag,))
         
         # 🌟 只有真实存在净需求（且有配方）时，才往下显示树枝
@@ -1429,29 +1521,6 @@ class ProductionTab:
         tk.Label(win, text="💡 提示: 双击列表中的产物可直接跳转分析", fg="#888", font=("微软雅黑", 9)).pack(pady=(0, 10))
 
         # ================= 🌟 MRP 辅助功能控制台 =================
-    def clear_inventory(self):
-        """清空所有临时库存并重新计算"""
-        if not self.temp_inventory: return
-        self.temp_inventory.clear()
-        self.generate_bom()
-
-    def set_inventory_for_item(self, item_name):
-        """弹出对话框，让用户设置该物品已经拥有多少个"""
-        if not item_name: return
-        current_val = self.temp_inventory.get(item_name, 0)
-        from tkinter import simpledialog # 确保引入
-        val = simpledialog.askfloat(
-            "设置已有库存", 
-            f"请输入你目前拥有的【{item_name}】数量:\n(填 0 即为没有)", 
-            initialvalue=current_val, 
-            parent=self.app
-        )
-        if val is not None:
-            if val <= 0:
-                self.temp_inventory.pop(item_name, None)
-            else:
-                self.temp_inventory[item_name] = val
-            self.generate_bom() # 设置完后，立刻触发全盘重新推演！
 
     def toggle_route_tree(self, expand=True):
         """一键展开/收起整个路线图的节点"""
@@ -1518,63 +1587,136 @@ class ProductionTab:
 
     # ================= 🌟 重构：神出鬼没的双击内联输入框 =================
     def on_double_click_tree(self, event):
-        tv = event.widget # 获取当前点击的是哪个树
+        tv = event.widget
         item_id = tv.identify_row(event.y)
         if not item_id: return "break"
         
         vals = tv.item(item_id, "values")
         if not vals: return "break"
-        item_name = vals[0]
+        
+        # 呼唤精美的双轨库存设置窗
+        self.open_inventory_popup(event.x_root, event.y_root, vals[0])
+        return "break"
+    # ================= 🌟 终极版 MRP 库存管理 =================
+    def clear_inventory(self):
+        """清空所有临时库存并重新计算"""
+        if not self.temp_inventory: return
+        self.temp_inventory.clear()
+        self.generate_bom()
 
-        # 获取该行的坐标位置，为了让输入框精准悬浮
-        bbox = tv.bbox(item_id)
-        if not bbox: return "break"
-        _, y_pos, _, h = bbox
+    def set_inventory_for_item(self, item_name):
+        """通过右键菜单调用弹窗"""
+        x, y = self.app.winfo_pointerxy()
+        self.open_inventory_popup(x, y, item_name)
 
-        # 在树状图上动态生成一个输入框
-        ent = ttk.Entry(tv, font=("微软雅黑", 10), justify="center")
-        # 将输入框悬浮在鼠标点击的 X 坐标附近，Y 坐标与当前行对齐
-        ent.place(x=max(event.x - 30, 20), y=y_pos, width=80, height=h)
+    def get_inv_mark(self, item_name):
+        """生成如 '📦[3+20]' 或 '📦[100-20]' 的智能库存标记"""
+        if item_name not in self.temp_inventory: return ""
+        
+        data = self.temp_inventory[item_name]
+        # 兼容旧版的数字格式，防报错
+        base = data.get("base", 0) if isinstance(data, dict) else data
+        crafted = data.get("crafted", 0) if isinstance(data, dict) else 0
+        cons = self.consumed_inv.get(item_name, 0)
+        
+        b_fmt = int(base) if float(base).is_integer() else base
+        c_fmt = int(crafted) if float(crafted).is_integer() else crafted
+        cons_fmt = int(cons) if float(cons).is_integer() else cons
+        
+        parts = []
+        if base > 0: parts.append(str(b_fmt))
+        if crafted > 0: parts.append(f"+{c_fmt}")
+        if cons > 0: parts.append(f"-{cons_fmt}")
+        
+        if not parts: return ""
+        res = "".join(parts)
+        if res.startswith("+"): res = res[1:] # 如果只有制造增量，去掉最前面的 +
+        return f" 📦[{res}]"
 
-        # 回显当前已有的库存数量
-        current_inv = self.temp_inventory.get(item_name, 0)
-        if current_inv > 0:
-            ent.insert(0, str(current_inv))
-
-        ent.focus()
-        ent.select_range(0, tk.END) # 自动全选，方便直接打字覆盖
-
-        # 闭包：处理输入框保存逻辑
+    def open_inventory_popup(self, event_x, event_y, item_name):
+        """🌟 悬浮双轨输入法：极简、智能锁定、失去焦点自动保存"""
+        
+        # 防止手快点出多个弹窗
+        if hasattr(self, "_inv_popup") and self._inv_popup and self._inv_popup.winfo_exists():
+            self._inv_popup.destroy()
+            
+        win_edit = tk.Toplevel(self.app)
+        self._inv_popup = win_edit
+        win_edit.wm_overrideredirect(True)
+        win_edit.geometry(f"+{event_x + 10}+{event_y + 10}")
+        win_edit.attributes("-topmost", True)
+        win_edit.configure(bg="#f8f9fa", bd=1, relief="solid", padx=8, pady=8)
+        
+        # 🌟 1. 去掉多余标题，行号全面上移
+        tk.Label(win_edit, text="仓库存量:", bg="#f8f9fa", font=("微软雅黑", 9)).grid(row=0, column=0, sticky="e", pady=2)
+        ent_base = ttk.Entry(win_edit, width=8, justify="center")
+        ent_base.grid(row=0, column=1, pady=2, padx=5)
+        
+        tk.Label(win_edit, text="制造增量:", bg="#f8f9fa", font=("微软雅黑", 9)).grid(row=1, column=0, sticky="e", pady=2)
+        ent_craft = ttk.Entry(win_edit, width=8, justify="center")
+        ent_craft.grid(row=1, column=1, pady=2, padx=5)
+        
+        # 🌟 2. 智能判断：如果配方本里没有它，或者它根本不需要任何材料，制造框变灰并锁定
+        recipes = self.dm.data.get("recipes", {})
+        is_craftable = item_name in recipes and len(recipes[item_name].get("materials", {})) > 0
+        
+        if not is_craftable:
+            ent_craft.insert(0, "-")
+            ent_craft.configure(state="disabled")
+        
+        # 回显当前数据
+        curr = self.temp_inventory.get(item_name, {})
+        if isinstance(curr, (int, float)): curr = {"base": curr, "crafted": 0}
+        
+        if curr.get("base", 0) > 0: 
+            ent_base.insert(0, str(curr["base"]))
+        if is_craftable and curr.get("crafted", 0) > 0: 
+            ent_craft.insert(0, str(curr["crafted"]))
+        
+        ent_base.focus()
+        ent_base.select_range(0, tk.END) # 自动全选方便直接覆盖
+        
         def commit(e=None):
-            val_str = ent.get().strip()
-            ent.unbind("<FocusOut>") # 防止销毁时再次触发 FocusOut
-            ent.destroy()
+            # 加锁，防止重复执行提交导致多次重绘
+            if getattr(win_edit, "_committed", False): return
+            win_edit._committed = True
             
             try:
-                val = float(val_str) if val_str else 0
-                old_val = self.temp_inventory.get(item_name, 0)
+                b_val = float(ent_base.get().strip() or 0)
+                # 如果不可合成，制造量强制为 0
+                c_val = float(ent_craft.get().strip() or 0) if is_craftable else 0.0
                 
-                # 如果数字变了，才触发沉重的全局重新计算
-                if val != old_val:
-                    if val <= 0:
+                old = self.temp_inventory.get(item_name, {})
+                old_b = old.get("base", 0) if isinstance(old, dict) else old
+                old_c = old.get("crafted", 0) if isinstance(old, dict) else 0
+                
+                # 数据变动才重绘
+                if b_val != old_b or c_val != old_c:
+                    if b_val <= 0 and c_val <= 0:
                         self.temp_inventory.pop(item_name, None)
                     else:
-                        self.temp_inventory[item_name] = val
-                    
+                        self.temp_inventory[item_name] = {"base": b_val, "crafted": c_val}
                     self.save_current_state()
                     self.generate_bom()
-            except ValueError:
-                pass # 输了乱码就不管它
+            except ValueError: pass
+            
+            win_edit.destroy()
 
         def cancel(e=None):
-            ent.unbind("<FocusOut>")
-            ent.destroy()
+            win_edit._committed = True
+            win_edit.destroy()
 
-        # 绑定三大交互事件：回车保存、点其他地方保存、Esc取消
-        ent.bind("<Return>", commit)
-        ent.bind("<FocusOut>", commit)
-        ent.bind("<Escape>", cancel)
-
-        # 🌟 极其重要：返回 "break" 彻底拦截系统默认事件！
-        # 这样双击路线图的节点时，它就不会再瞎展开/收起了。
-        return "break"     
+        # 绑定快捷键
+        win_edit.bind("<Return>", commit)
+        win_edit.bind("<Escape>", cancel)
+        
+        # 🌟 3. 去掉保存按钮，改为点击外部区域自动保存
+        def close_if_lost_focus(e=None):
+            if getattr(win_edit, "_committed", False): return
+            # 判断焦点是否真的离开了这个小窗口
+            focused = win_edit.focus_get()
+            if focused is None or focused.winfo_toplevel() != win_edit:
+                commit()
+                
+        # 延迟 100 毫秒检测焦点，防止在两个输入框之间切换时误判
+        win_edit.bind("<FocusOut>", lambda e: win_edit.after(100, close_if_lost_focus))

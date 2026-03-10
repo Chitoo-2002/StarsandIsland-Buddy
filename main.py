@@ -32,7 +32,7 @@ def check_single_instance():
 class FarmManagerApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("星砂岛小助手 V1.2")
+        self.title("星砂岛小助手 V1.3")
         self.geometry("1400x850")
         
         # 1. 启动数据大脑
