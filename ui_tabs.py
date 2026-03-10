@@ -758,6 +758,9 @@ class ProductionTab:
         self.history = []     
         self.history_idx = -1 
         self.bom_right_clicked_item = "" 
+        
+        # 🌟 核心引擎数据：记录用户临时录入的已有库存
+        self.temp_inventory = {} 
 
         self.frame = tk.Frame(parent, bg="white")
         self.frame.pack(fill="both", expand=True)
@@ -776,24 +779,27 @@ class ProductionTab:
         self.ent_target_qty = ttk.Entry(f_top, width=6)
         self.ent_target_qty.insert(0, "1")
         self.ent_target_qty.pack(side="left", padx=5)
-        ttk.Button(f_top, text="🚀 重新生成", command=self.generate_bom).pack(side="left", padx=10)
-        tk.Label(f_top, text="💡 提示: 双击文字编辑配方，右键调出菜单，左右面板边界可自由拖拽", fg="#888", bg="white").pack(side="left", padx=10)
+        ttk.Button(f_top, text="🚀 重新生成", command=self.generate_bom).pack(side="left", padx=(5, 15))
+        
+        # 🌟 新增的三个工具按钮
+        ttk.Button(f_top, text="🔽展开", width=6, command=lambda: self.toggle_route_tree(True)).pack(side="left", padx=(0,2))
+        ttk.Button(f_top, text="🔼收起", width=6, command=lambda: self.toggle_route_tree(False)).pack(side="left", padx=(0,10))
+        ttk.Button(f_top, text="🧹清空库存", command=self.clear_inventory).pack(side="left", padx=5)
+        
+        tk.Label(f_top, text="💡提示: 双击文字编辑配方，右键调出菜单设置库存", fg="#888", bg="white").pack(side="left", padx=10)
 
         # ================= 三栏自由拖拽面板 =================
         self.paned = ttk.PanedWindow(self.frame, orient=tk.HORIZONTAL)
         self.paned.pack(fill="both", expand=True, padx=10, pady=(0, 10))
 
-        # 1. 强行设定极小的初始宽度
         frame_guide = tk.Frame(self.paned, bg="white", width=10)
         frame_route = tk.Frame(self.paned, bg="white", width=10)
         frame_lib = tk.Frame(self.paned, bg="#f5f5f7", width=10)
 
-        # 🌟 2. 终极绝杀：禁止 Frame 被内部的树状图和列表反向撑大！
         frame_guide.pack_propagate(False)
         frame_route.pack_propagate(False)
         frame_lib.pack_propagate(False)
 
-        # 3. 现在 4:4:1 将接管 99% 的屏幕宽度完美分配！
         self.paned.add(frame_guide, weight=7)
         self.paned.add(frame_route, weight=9)
         self.paned.add(frame_lib, weight=3)
@@ -806,27 +812,22 @@ class ProductionTab:
         # --- 第二栏：路线图 ---
         tk.Label(frame_route, text="🗺️ 生产流程路线图", font=("微软雅黑", 11, "bold"), fg="#1565c0", bg="white").pack(anchor="w", pady=5, padx=5)
         
-        # 🌟 1. 创建横向滚动条，将其靠底边放置，并填满横向宽度
         route_xscroll = ttk.Scrollbar(frame_route, orient="horizontal")
         route_xscroll.pack(side="bottom", fill="x")
         
-        # 🌟 2. 创建树状图时，将 xscrollcommand 绑定给刚建好的滚动条
         self.tv_route = ttk.Treeview(frame_route, show="tree", xscrollcommand=route_xscroll.set)
         self.tv_route.pack(side="top", fill="both", expand=True)
-        
-        # 🌟 3. 反向绑定：告诉滚动条，拖动它时去控制 tv_route 的 X 轴（横向视角）
         route_xscroll.config(command=self.tv_route.xview)
-
-        # 🌟 4. 终极绝杀：禁止主列跟随外框缩放，并强行赋予它 2000 像素的超大内部宽度！
         self.tv_route.column("#0", stretch=False, width=2000)
 
-        # 批量绑定两个树状图的事件和样式
         for tv in (self.tv_guide, self.tv_route):
             tv.bind("<Button-3>", self.on_right_click_tree)
             tv.bind("<Double-Button-1>", self.on_double_click_tree)
             tv.tag_configure("verified", foreground="#2e7d32", font=("微软雅黑", 11,'bold')) 
             tv.tag_configure("unverified", foreground="#d84315", font=("微软雅黑", 10, "bold")) 
             tv.tag_configure("root_sum", foreground="#1565c0", font=("微软雅黑", 11, "bold"))
+            # 🌟 新增库存抵扣的高亮颜色样式
+            tv.tag_configure("inventory", foreground="#827717", font=("微软雅黑", 10, "italic"))
 
         # --- 第三栏：产物库 ---
         tk.Label(frame_lib, text="📦 产物管理库", font=("微软雅黑", 11, "bold"), bg="#f5f5f7").pack(anchor="w", pady=(5, 5), padx=5)
@@ -846,7 +847,7 @@ class ProductionTab:
         self.menu_lib = tk.Menu(self.frame, tearoff=0)
         self.menu_lib.add_command(label="🎯 设为目标并计算", command=self.set_as_target)
         self.menu_lib.add_command(label="✏️ 编辑该配方", command=self.edit_selected_recipe)
-        self.menu_lib.add_command(label="🔄 切换核对状态", command=self.toggle_verify_status)
+        self.menu_lib.add_command(label="🔄 切换核采取状态", command=self.toggle_verify_status)
         self.menu_lib.add_command(label="🔍 查看可合成产物 (用途)", command=self.show_usages_for_library_item)
         self.menu_lib.add_separator()
         self.menu_lib.add_command(label="🗑️ 彻底删除", command=self.delete_selected_recipe)
@@ -854,6 +855,8 @@ class ProductionTab:
         self.menu_bom = tk.Menu(self.frame, tearoff=0)
         self.menu_bom.add_command(label="🎯 设为目标并计算", command=lambda: self._set_target_internal(self.bom_right_clicked_item))
         self.menu_bom.add_command(label="✏️ 编辑该配方", command=lambda: self.open_recipe_editor(self.bom_right_clicked_item))
+        # 🌟 新增选项：设置该物品当前的已有库存数量！
+        self.menu_bom.add_command(label="📦 设置已有库存数量", command=lambda: self.set_inventory_for_item(self.bom_right_clicked_item))
         self.menu_bom.add_command(label="🔄 切换核对状态", command=self._toggle_bom_verify)
         self.menu_bom.add_command(label="🔍 查看可合成产物 (用途)", command=self.show_usages_for_bom_item)
         self.menu_bom.add_separator()
@@ -865,37 +868,14 @@ class ProductionTab:
 
         self.refresh_library()
 
-        # ================= 🌟 悬浮提示窗 (Tooltip) 状态与事件绑定 =================
         self.tooltip_win = None
         self.tooltip_id = None
         self.hovered_item = None
 
-        # 给三个框统一绑定鼠标悬停和离开事件
         for w in (self.tv_guide, self.tv_route, self.lb_library):
             w.bind("<Motion>", self._on_mouse_motion)
             w.bind("<Leave>", self._on_mouse_leave)
-    # 🌟 新增：以下这一整块都是配合历史记录和新菜单的功能函数
-    def history_back(self):
-        if self.history_idx > 0:
-            self.history_idx -= 1
-            self.var_target_product.set(self.history[self.history_idx])
-            self.generate_bom()
-
-    def history_forward(self):
-        if self.history_idx < len(self.history) - 1:
-            self.history_idx += 1
-            self.var_target_product.set(self.history[self.history_idx])
-            self.generate_bom()
-
-    def _set_target_internal(self, name):
-        """核心目标切换函数，处理历史记录的覆盖"""
-        if not name or "请从右侧库中选择" in name: return
-        self.history = self.history[:self.history_idx + 1]
-        if not self.history or self.history[-1] != name:
-            self.history.append(name)
-            self.history_idx += 1
-        self.var_target_product.set(name)
-        self.generate_bom()
+# 🌟 新增：以下这一整块都是配合历史记录和新菜单的功能函数
 
     def _toggle_bom_verify(self):
         name = self.bom_right_clicked_item
@@ -979,11 +959,6 @@ class ProductionTab:
             self.dm.save_data()
             self.refresh_library()
             self.generate_bom()
-
-    def set_as_target(self):
-        name = self.get_selected_library_item()
-        if name:
-            self._set_target_internal(name) # 🌟 接入新的历史记录架构
 
     def edit_selected_recipe(self):
         name = self.get_selected_library_item()
@@ -1127,12 +1102,22 @@ class ProductionTab:
         ttk.Button(f_main, text="💾 保存配方并关闭", command=save_and_close).pack(fill="x", pady=3)
         refresh_local_list()
     def _calc_totals_and_consumers(self, item_name, qty, path_set, consumer=None):
-        """核心算法 1：递归统计总数，并记录每个物品被谁消耗（用于提示何时使用）"""
+        """核心算法 1：带有 MRP 净需求扣减的底层推演引擎"""
         if item_name in path_set: return 
         
+        # ================= 🌟 MRP 核心：库存扣减 =================
+        available = self.working_inv.get(item_name, 0)
+        if available > 0:
+            deduct = min(available, qty)
+            self.working_inv[item_name] -= deduct
+            qty -= deduct # 扣除可以直接从仓库拿货的数量
+            
+        # 如果从仓库里拿完之后，还需要合成的数量为 0，直接停止向下追溯！
+        if qty <= 0: return 
+        # =========================================================
+
         self.flat_totals[item_name] = self.flat_totals.get(item_name, 0) + qty
         
-        # 记录消费者，从而推断它在第几步被使用
         if consumer:
             if item_name not in self.item_consumers:
                 self.item_consumers[item_name] = set()
@@ -1148,7 +1133,6 @@ class ProductionTab:
             new_path.add(item_name)
             for mat_name, u_qty in recipes[item_name].get("materials", {}).items():
                 self._calc_totals_and_consumers(mat_name, qty * u_qty, new_path, consumer=item_name)
-
     def _get_bottom_up_level(self, item_name, recipes, memo=None, path=None):
         """核心算法 2：自底向上计算绝对阶段。原材=第1步，每往上一层+1步。"""
         if memo is None: memo = {}
@@ -1175,7 +1159,6 @@ class ProductionTab:
         target = self.var_target_product.get().strip()
         qty_str = self.ent_target_qty.get().strip()
         
-        # 清空两个独立的树
         self.tv_guide.delete(*self.tv_guide.get_children()) 
         self.tv_route.delete(*self.tv_route.get_children()) 
         
@@ -1186,6 +1169,9 @@ class ProductionTab:
         self.flat_totals = {}
         self.item_consumers = {}
         self.unverified_items = set()
+        
+        # 🌟 建立运算沙箱：拷贝一份临时库存，避免污染源数据
+        self.working_inv = self.temp_inventory.copy()
         
         self._calc_totals_and_consumers(target, total_qty, set(), consumer=None)
         recipes = self.dm.data.get("recipes", {})
@@ -1201,7 +1187,16 @@ class ProductionTab:
             lvl = self.level_memo[item]
             steps_data[lvl].append((item, qty))
 
-        # ================= 🌟 渲染指南树 (直接插入根节点) =================
+        # ================= 🌟 渲染指南树：新增库存抵扣清单 =================
+        # 对比初始库存和沙箱结算后的库存，算出本次生产到底消耗了哪些存货
+        used_inv = {k: self.temp_inventory[k] - self.working_inv[k] for k in self.temp_inventory if self.temp_inventory[k] > self.working_inv[k]}
+        if used_inv:
+            inv_node = self.tv_guide.insert("", "end", text="📦 直接调取已有库存 (免加工)", tags=("inventory",))
+            for k, v in used_inv.items():
+                v_fmt = int(v) if float(v).is_integer() else v
+                self.tv_guide.insert(inv_node, "end", text=f" ▪ {k}   从库存拿 {v_fmt} 个", values=(k,), tags=("inventory",))
+            self.tv_guide.item(inv_node, open=True)
+
         for lvl in range(1, max_level + 1):
             if not steps_data[lvl]: continue
             
@@ -1212,7 +1207,6 @@ class ProductionTab:
             elif lvl == max_level: step_title = f"👑 [第 {lvl-1} 步] 冲刺最终目标"
             else: step_title = f"⚙️ [第 {lvl-1} 步] 合成本级产物"
 
-            # 直接插入，不再需要嵌套在一个无意义的全局父节点下
             node_step = self.tv_guide.insert("", "end", text=step_title, tags=("root_sum",))
 
             for item, qty in items_in_step:
@@ -1230,40 +1224,55 @@ class ProductionTab:
                         levels_fmt = ", ".join(map(str, c_levels))
                         usage_str = f"   ➡️ 存入仓库 (将于第 {levels_fmt} 步使用)"
 
-                self.tv_guide.insert(node_step, "end", text=f" ▪ {item}   x {qty_fmt}   {status}{usage_str}", values=(item,), tags=(tag,))
+                self.tv_guide.insert(node_step, "end", text=f" ▪ {item}   加工 x {qty_fmt}   {status}{usage_str}", values=(item,), tags=(tag,))
             self.tv_guide.item(node_step, open=True)
 
-        # ================= 🌟 渲染路线树 (目标产物直接作为根节点) =================
+        # ================= 🌟 渲染路线树：给路线图分配独立的沙箱库存 =================
+        self.route_working_inv = self.temp_inventory.copy()
         self.insert_bom_node("", target, total_qty, set())
-
 
     def insert_bom_node(self, parent_id, item_name, required_qty, path_set):
         recipes = self.dm.data.get("recipes", {})
-        qty_fmt = int(required_qty) if required_qty.is_integer() else required_qty
+        req_fmt = int(required_qty) if required_qty.is_integer() else required_qty
+        
+        # ================= 🌟 路线图专属库存推演 =================
+        available = self.route_working_inv.get(item_name, 0)
+        deduct = min(available, required_qty)
+        if deduct > 0:
+            self.route_working_inv[item_name] -= deduct
+        net_qty = required_qty - deduct # 需要实际合成的数量
+        # ========================================================
         
         if item_name in path_set:
-            self.tv_route.insert(parent_id, "end", text=f"⚠️ {item_name}   x {qty_fmt}   (循环嵌套异常)", values=(item_name,), tags=("unverified",))
+            self.tv_route.insert(parent_id, "end", text=f"⚠️ {item_name}   x {req_fmt}   (循环嵌套异常)", values=(item_name,), tags=("unverified",))
             return
 
         is_known = item_name in recipes
         is_verified = is_known and recipes[item_name].get("verified", False)
-        status_text = "" if is_verified else "  [❌未核对]"
-        tag = "verified" if is_verified else "unverified"
         
-        # 移除了所有杂项前缀，让文本紧贴折叠箭头
-        display_text = f"└─ {item_name}   x {qty_fmt}{status_text}"
+        # 🌟 智能动态文本：如果全靠库存，颜色变黄；如果部分靠库存，展示扣减详情
+        if net_qty <= 0:
+            status_text = f"  [📦库存直接满足(消耗{int(deduct) if deduct.is_integer() else deduct})]"
+            tag = "inventory"
+        else:
+            status_text = "" if is_verified else "  [❌未核对]"
+            if deduct > 0:
+                ded_fmt = int(deduct) if deduct.is_integer() else deduct
+                status_text += f"  [📦已抵扣库存 {ded_fmt}]"
+            tag = "verified" if is_verified else "unverified"
         
-        # 插入独立的 tv_route
+        display_text = f"└─ {item_name}   x {req_fmt}{status_text}"
         node_id = self.tv_route.insert(parent_id, "end", text=display_text, values=(item_name,), tags=(tag,))
         
-        if is_known:
+        # 🌟 只有真实存在净需求（且有配方）时，才往下显示树枝
+        if is_known and net_qty > 0:
             new_path = path_set.copy()
             new_path.add(item_name)
             for mat_name, unit_qty in recipes[item_name].get("materials", {}).items():
-                self.insert_bom_node(node_id, mat_name, required_qty * unit_qty, new_path)
+                self.insert_bom_node(node_id, mat_name, net_qty * unit_qty, new_path)
                 
-        self.tv_route.item(node_id, open=True)
-    
+        # 如果这个节点完全被库存满足，那底下的材料都不用看了，自动把它收起！
+        self.tv_route.item(node_id, open=(net_qty > 0))
     # =======================================================
     #               🌟 悬浮提示窗 (Tooltip) 引擎 🌟
     # =======================================================
@@ -1360,18 +1369,6 @@ class ProductionTab:
         tv.selection_set(item_id) 
         self.menu_bom.tk_popup(event.x_root, event.y_root)
 
-    def on_double_click_tree(self, event):
-        tv = event.widget # 获取当前点击的是哪个树
-        region = tv.identify_region(event.x, event.y)
-        if region == "tree": 
-            return 
-            
-        item_id = tv.identify_row(event.y)
-        if not item_id: return
-        vals = tv.item(item_id, "values")
-        if vals:
-            self.open_recipe_editor(vals[0]) 
-        return "break"
     def show_usages_for_library_item(self):
         name = self.get_selected_library_item()
         if name: self._show_usages_dialog(name)
@@ -1430,3 +1427,154 @@ class ProductionTab:
         lb.bind("<Double-Button-1>", on_double_click)
         
         tk.Label(win, text="💡 提示: 双击列表中的产物可直接跳转分析", fg="#888", font=("微软雅黑", 9)).pack(pady=(0, 10))
+
+        # ================= 🌟 MRP 辅助功能控制台 =================
+    def clear_inventory(self):
+        """清空所有临时库存并重新计算"""
+        if not self.temp_inventory: return
+        self.temp_inventory.clear()
+        self.generate_bom()
+
+    def set_inventory_for_item(self, item_name):
+        """弹出对话框，让用户设置该物品已经拥有多少个"""
+        if not item_name: return
+        current_val = self.temp_inventory.get(item_name, 0)
+        from tkinter import simpledialog # 确保引入
+        val = simpledialog.askfloat(
+            "设置已有库存", 
+            f"请输入你目前拥有的【{item_name}】数量:\n(填 0 即为没有)", 
+            initialvalue=current_val, 
+            parent=self.app
+        )
+        if val is not None:
+            if val <= 0:
+                self.temp_inventory.pop(item_name, None)
+            else:
+                self.temp_inventory[item_name] = val
+            self.generate_bom() # 设置完后，立刻触发全盘重新推演！
+
+    def toggle_route_tree(self, expand=True):
+        """一键展开/收起整个路线图的节点"""
+        def get_all_children(tree, item=""):
+            children = tree.get_children(item)
+            for child in children:
+                children += get_all_children(tree, child)
+            return children
+        for item in get_all_children(self.tv_route):
+            self.tv_route.item(item, open=expand)
+
+    # ================= 🌟 历史快照辅助函数 (新增) =================
+    def save_current_state(self):
+        """将当前的产物目标和临时库存，打包存入当前历史节点"""
+        if 0 <= self.history_idx < len(self.history):
+            self.history[self.history_idx] = {
+                "target": self.var_target_product.get(),
+                "inventory": self.temp_inventory.copy() # 深拷贝当前库存状态
+            }
+
+    # ================= 🌟 重构：自带快照记忆的历史记录 =================
+    def history_back(self):
+        if self.history_idx > 0:
+            self.save_current_state() # 走之前，保存当前页面的库存状态
+            self.history_idx -= 1
+            
+            # 读取上一个历史快照
+            state = self.history[self.history_idx]
+            self.var_target_product.set(state["target"])
+            self.temp_inventory = state["inventory"].copy() # 恢复当时的库存
+            self.generate_bom()
+
+    def history_forward(self):
+        if self.history_idx < len(self.history) - 1:
+            self.save_current_state() # 走之前，保存当前状态
+            self.history_idx += 1
+            
+            # 读取下一个历史快照
+            state = self.history[self.history_idx]
+            self.var_target_product.set(state["target"])
+            self.temp_inventory = state["inventory"].copy() # 恢复当时的库存
+            self.generate_bom()
+
+    def _set_target_internal(self, name):
+        """核心目标切换函数，处理历史记录的覆盖与库存重置"""
+        if not name or "请从右侧库中选择" in name: return
+        
+        self.save_current_state() # 保存切走前的旧状态
+        self.history = self.history[:self.history_idx + 1] # 砍掉未来的历史
+        
+        # 只要点击了新目标，或者是从库里重新点击了当前目标，都视为“开启全新推演”，清空库存！
+        if not self.history or self.history[-1]["target"] != name:
+            self.history.append({"target": name, "inventory": {}})
+            self.history_idx += 1
+            
+        self.var_target_product.set(name)
+        self.temp_inventory = {} # 🌟 核心：切换新产物时，临时库存归零
+        self.generate_bom()
+
+    def set_as_target(self):
+        name = self.get_selected_library_item()
+        if name:
+            self._set_target_internal(name)
+
+    # ================= 🌟 重构：神出鬼没的双击内联输入框 =================
+    def on_double_click_tree(self, event):
+        tv = event.widget # 获取当前点击的是哪个树
+        item_id = tv.identify_row(event.y)
+        if not item_id: return "break"
+        
+        vals = tv.item(item_id, "values")
+        if not vals: return "break"
+        item_name = vals[0]
+
+        # 获取该行的坐标位置，为了让输入框精准悬浮
+        bbox = tv.bbox(item_id)
+        if not bbox: return "break"
+        _, y_pos, _, h = bbox
+
+        # 在树状图上动态生成一个输入框
+        ent = ttk.Entry(tv, font=("微软雅黑", 10), justify="center")
+        # 将输入框悬浮在鼠标点击的 X 坐标附近，Y 坐标与当前行对齐
+        ent.place(x=max(event.x - 30, 20), y=y_pos, width=80, height=h)
+
+        # 回显当前已有的库存数量
+        current_inv = self.temp_inventory.get(item_name, 0)
+        if current_inv > 0:
+            ent.insert(0, str(current_inv))
+
+        ent.focus()
+        ent.select_range(0, tk.END) # 自动全选，方便直接打字覆盖
+
+        # 闭包：处理输入框保存逻辑
+        def commit(e=None):
+            val_str = ent.get().strip()
+            ent.unbind("<FocusOut>") # 防止销毁时再次触发 FocusOut
+            ent.destroy()
+            
+            try:
+                val = float(val_str) if val_str else 0
+                old_val = self.temp_inventory.get(item_name, 0)
+                
+                # 如果数字变了，才触发沉重的全局重新计算
+                if val != old_val:
+                    if val <= 0:
+                        self.temp_inventory.pop(item_name, None)
+                    else:
+                        self.temp_inventory[item_name] = val
+                    
+                    self.save_current_state()
+                    self.generate_bom()
+            except ValueError:
+                pass # 输了乱码就不管它
+
+        def cancel(e=None):
+            ent.unbind("<FocusOut>")
+            ent.destroy()
+
+        # 绑定三大交互事件：回车保存、点其他地方保存、Esc取消
+        ent.bind("<Return>", commit)
+        ent.bind("<FocusOut>", commit)
+        ent.bind("<Escape>", cancel)
+
+        # 🌟 极其重要：返回 "break" 彻底拦截系统默认事件！
+        # 这样双击路线图的节点时，它就不会再瞎展开/收起了。
+        return "break"     

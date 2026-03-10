@@ -1,7 +1,33 @@
+
+import ctypes
+import sys
+from tkinter import messagebox
+import tkinter as tk
 import tkinter as tk
 from tkinter import ttk
 from data_manager import DataManager
 from ui_tabs import ReportTab, DatabaseTab, SettingsTab, FertilizerTab, CompareTab, ProductionTab
+
+def check_single_instance():
+    """检查程序是否已经运行，防止多开"""
+    # 这个名字必须是唯一的，你可以随便起，只要不跟别人的软件重名就行
+    mutex_name = "StarSandBuddy_Global_Mutex_Lock_v1"
+    
+    # 调用 Windows 底层 API 创建一个互斥锁
+    mutex = ctypes.windll.kernel32.CreateMutexW(None, False, mutex_name)
+    
+    # 183 代表 ERROR_ALREADY_EXISTS，说明这把锁已经被前一个打开的程序占用了
+    if ctypes.windll.kernel32.GetLastError() == 183:
+        # 弹出一个警告框，告诉玩家已经在运行了
+        root = tk.Tk()
+        root.withdraw() # 隐藏多余的空白主窗口
+        root.attributes("-topmost", True) # 确保弹窗在最顶层
+        messagebox.showwarning("提示", "【星砂岛小助手】已经在运行中啦，请在任务栏找找看，不要重复打开哦！")
+        root.destroy()
+        sys.exit(0) # 强制关闭当前这个多余的进程
+        
+    return mutex # ⚠️ 极其重要：必须把这个锁 return 出去并保持引用，否则 Python 的垃圾回收机制会把它当垃圾清掉，锁就失效了！
+
 
 class FarmManagerApp(tk.Tk):
     def __init__(self):
@@ -83,5 +109,6 @@ class FarmManagerApp(tk.Tk):
         txt.insert(tk.END, "\n".join(self.data_manager.debug_logs)); txt.see(tk.END)
 
 if __name__ == "__main__":
+    app_mutex = check_single_instance()
     app = FarmManagerApp()
     app.mainloop()
