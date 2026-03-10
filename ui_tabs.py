@@ -298,7 +298,7 @@ class ReportTab:
         tv.heading("alt", text="🌱扩种等价时薪")
         tv.heading("altd", text="📈扩种时薪增量")
         tv.heading("alt_net", text="🌾扩种单次收益")
-        tv.heading("plots", text="🔲 扩种地块数")
+        tv.heading("plots", text="🔲肥料等价种子数")
 
         tv.column("s", width=200, anchor="center"); tv.column("p", width=90, anchor="center")
         tv.column("np", width=120, anchor="center"); tv.column("alt", width=130, anchor="center")
@@ -348,11 +348,35 @@ class ReportTab:
         tv.tag_configure('max', foreground='#1a73e8', font=('微软雅黑', 10, 'bold'))
         tv.tag_configure('min', foreground='#d93025')
         
+        # 原有的双击查看公式功能
         def dbl_f(e):
             sel = tv.selection()
             if sel and tv.item(sel[0])['values'][0] in F: 
                 FormulaViewer.render(w, c['name'], tv.item(sel[0])['values'][0], F[tv.item(sel[0])['values'][0]])
         tv.bind("<Double-1>", dbl_f)
+
+        # 🌟 新增的右键菜单功能
+        def right_click_menu(e):
+            # 获取鼠标点击位置所在的行号
+            row_id = tv.identify_row(e.y)
+            if not row_id: return
+            
+            # 强行选中被右键点击的这行（视觉反馈）
+            tv.selection_set(row_id)
+            
+            # 获取当前行的策略名称 (第一列)
+            strategy_name = tv.item(row_id)['values'][0]
+            
+            # 只有当该策略有对应的公式数据时，才弹出菜单
+            if strategy_name in F:
+                rm = tk.Menu(w, tearoff=0, font=("微软雅黑", 9))
+                rm.add_command(
+                    label=f"🔢 查看 [{strategy_name}] 计算公式", 
+                    command=lambda: FormulaViewer.render(w, c['name'], strategy_name, F[strategy_name])
+                )
+                rm.post(e.x_root, e.y_root)
+
+        tv.bind("<Button-3>", right_click_menu)
 
     def show_details_popup(self, n):
         c = next((x for x in self.dm.data["crops"] if x["name"] == n), None); self.show_details(c) if c else None
@@ -665,9 +689,9 @@ class CompareTab:
         results.sort(key=lambda x: x["diff"], reverse=True)
         
         # 🌟 移除了“施肥后最优流派”，加入了两列“单次收益”
-        headers = ["排名", "作物名称", "原最优流派", "原最高时薪", "施肥后时薪", "🔥 施肥时薪增量", "💰 施肥单次收益", "🔲 扩种地块数", "🌱 扩种等价时薪", "📈 扩种时薪增量", "🌾 扩种单次收益"]
+        headers = ["排名", "作物名称", "原最优流派", "原最高时薪", "施肥后时薪", "🔥 施肥时薪增量", "💰 施肥单次收益", "🔲 肥料等价种子数", "🌱 扩种等价时薪", "📈 扩种时薪增量", "🌾 扩种单次收益"]
         self.cmp_sheet.headers(headers)
-        
+
         sheet_data = []
         for i, r in enumerate(results):
             rank = f"Top {i+1}" if i < 3 else str(i+1)
@@ -770,8 +794,8 @@ class ProductionTab:
         frame_lib.pack_propagate(False)
 
         # 3. 现在 4:4:1 将接管 99% 的屏幕宽度完美分配！
-        self.paned.add(frame_guide, weight=8)
-        self.paned.add(frame_route, weight=8)
+        self.paned.add(frame_guide, weight=7)
+        self.paned.add(frame_route, weight=9)
         self.paned.add(frame_lib, weight=3)
 
         # --- 第一栏：行动指南 ---
@@ -781,8 +805,20 @@ class ProductionTab:
 
         # --- 第二栏：路线图 ---
         tk.Label(frame_route, text="🗺️ 生产流程路线图", font=("微软雅黑", 11, "bold"), fg="#1565c0", bg="white").pack(anchor="w", pady=5, padx=5)
-        self.tv_route = ttk.Treeview(frame_route, show="tree")
-        self.tv_route.pack(fill="both", expand=True)
+        
+        # 🌟 1. 创建横向滚动条，将其靠底边放置，并填满横向宽度
+        route_xscroll = ttk.Scrollbar(frame_route, orient="horizontal")
+        route_xscroll.pack(side="bottom", fill="x")
+        
+        # 🌟 2. 创建树状图时，将 xscrollcommand 绑定给刚建好的滚动条
+        self.tv_route = ttk.Treeview(frame_route, show="tree", xscrollcommand=route_xscroll.set)
+        self.tv_route.pack(side="top", fill="both", expand=True)
+        
+        # 🌟 3. 反向绑定：告诉滚动条，拖动它时去控制 tv_route 的 X 轴（横向视角）
+        route_xscroll.config(command=self.tv_route.xview)
+
+        # 🌟 4. 终极绝杀：禁止主列跟随外框缩放，并强行赋予它 2000 像素的超大内部宽度！
+        self.tv_route.column("#0", stretch=False, width=2000)
 
         # 批量绑定两个树状图的事件和样式
         for tv in (self.tv_guide, self.tv_route):
@@ -829,6 +865,15 @@ class ProductionTab:
 
         self.refresh_library()
 
+        # ================= 🌟 悬浮提示窗 (Tooltip) 状态与事件绑定 =================
+        self.tooltip_win = None
+        self.tooltip_id = None
+        self.hovered_item = None
+
+        # 给三个框统一绑定鼠标悬停和离开事件
+        for w in (self.tv_guide, self.tv_route, self.lb_library):
+            w.bind("<Motion>", self._on_mouse_motion)
+            w.bind("<Leave>", self._on_mouse_leave)
     # 🌟 新增：以下这一整块都是配合历史记录和新菜单的功能函数
     def history_back(self):
         if self.history_idx > 0:
@@ -1132,9 +1177,9 @@ class ProductionTab:
             items_in_step = steps_data[lvl]
             items_in_step.sort(key=lambda x: x[0])
 
-            if lvl == 1: step_title = "⛏️ [第 1 步] 准备底层原材"
-            elif lvl == max_level: step_title = f"👑 [第 {lvl} 步] 冲刺最终目标"
-            else: step_title = f"⚙️ [第 {lvl} 步] 合成本级产物"
+            if lvl == 1: step_title = "⛏️ 所有基础底层材料"
+            elif lvl == max_level: step_title = f"👑 [第 {lvl-1} 步] 冲刺最终目标"
+            else: step_title = f"⚙️ [第 {lvl-1} 步] 合成本级产物"
 
             # 直接插入，不再需要嵌套在一个无意义的全局父节点下
             node_step = self.tv_guide.insert("", "end", text=step_title, tags=("root_sum",))
@@ -1187,6 +1232,91 @@ class ProductionTab:
                 self.insert_bom_node(node_id, mat_name, required_qty * unit_qty, new_path)
                 
         self.tv_route.item(node_id, open=True)
+    
+    # =======================================================
+    #               🌟 悬浮提示窗 (Tooltip) 引擎 🌟
+    # =======================================================
+    def _on_mouse_leave(self, event):
+        """鼠标离开组件时，立刻销毁提示窗"""
+        self._hide_tooltip()
+        self.hovered_item = None
+        if self.tooltip_id:
+            self.frame.after_cancel(self.tooltip_id)
+            self.tooltip_id = None
+
+    def _on_mouse_motion(self, event):
+        """鼠标移动时，探测下方是哪个物品"""
+        widget = event.widget
+        item_name = None
+
+        # 探测树状图 (行动指南 & 路线图)
+        if isinstance(widget, ttk.Treeview):
+            row_id = widget.identify_row(event.y)
+            if row_id:
+                vals = widget.item(row_id, "values")
+                if vals: item_name = vals[0]
+                
+        # 探测列表框 (产物库)
+        elif isinstance(widget, tk.Listbox):
+            index = widget.nearest(event.y)
+            bbox = widget.bbox(index)
+            # 确保鼠标真的在文字上，而不是在列表下方的空白处
+            if bbox and bbox[1] <= event.y <= bbox[1] + bbox[3]:
+                raw_text = widget.get(index)
+                # 剥离可能存在的等级前缀 (如 "③ 铜锭")，精准提取产物名
+                clean_text = raw_text.split("  (")[0].strip()
+                parts = clean_text.split(maxsplit=1)
+                item_name = parts[1].strip() if len(parts) == 2 else clean_text
+
+        # 如果鼠标换了目标，重置计时器
+        if item_name != self.hovered_item:
+            self.hovered_item = item_name
+            self._hide_tooltip()
+            if self.tooltip_id:
+                self.frame.after_cancel(self.tooltip_id)
+            
+            if item_name:
+                # 停留 400 毫秒后，弹出提示窗
+                self.tooltip_id = self.frame.after(400, self._show_tooltip, event.x_root, event.y_root, item_name)
+
+    def _hide_tooltip(self):
+        """安全销毁提示窗"""
+        if self.tooltip_win:
+            self.tooltip_win.destroy()
+            self.tooltip_win = None
+
+    def _show_tooltip(self, x, y, item_name):
+        """构建并显示精美的黄色悬浮小便签"""
+        self._hide_tooltip()
+        
+        recipes = self.dm.data.get("recipes", {})
+        if item_name not in recipes: return # 没录入的直接无视
+            
+        mats = recipes[item_name].get("materials", {})
+        if not mats:
+            text = f"📦 【{item_name}】\n底层原材 (无需机器合成)"
+        else:
+            lines = [f"🛠️ 【{item_name}】的配方:"]
+            for m, q in mats.items():
+                qty_fmt = int(q) if isinstance(q, float) and q.is_integer() else q
+                lines.append(f" ▪ {m}  x {qty_fmt}")
+            text = "\n".join(lines)
+
+        # 创建一个无边框的顶层窗口
+        self.tooltip_win = tk.Toplevel(self.frame)
+        self.tooltip_win.wm_overrideredirect(True)
+        # 将窗口定位在鼠标右下方一点点，避免挡住鼠标
+        self.tooltip_win.wm_geometry(f"+{x+15}+{y+15}")
+        self.tooltip_win.attributes("-topmost", True) # 强制置顶
+        
+        # 类似便利贴的样式
+        tk.Label(
+            self.tooltip_win, text=text, justify="left", 
+            background="#ffffe0", foreground="#333", relief="solid", borderwidth=1, 
+            font=("微软雅黑", 10), padx=8, pady=5
+        ).pack()
+    
+    
     # 🌟 完全重写：分离右键与双击事件
     def on_right_click_tree(self, event):
         tv = event.widget # 获取当前点击的是哪个树 (tv_guide 还是 tv_route)

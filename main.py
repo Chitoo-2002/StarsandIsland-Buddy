@@ -6,7 +6,7 @@ from ui_tabs import ReportTab, DatabaseTab, SettingsTab, FertilizerTab, CompareT
 class FarmManagerApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("星砂岛作物收益计算器 V1.2")
+        self.title("星砂岛小助手 V1.2")
         self.geometry("1400x850")
         
         # 1. 启动数据大脑
@@ -46,7 +46,7 @@ class FarmManagerApp(tk.Tk):
         style.map("TEntry", fieldbackground=[("disabled", "#e0e0e0")])
         style.map("TCombobox", fieldbackground=[("disabled", "#e0e0e0")])
         # 🌟 新增这两行，调整所有树状图的默认字体和行高
-        style.configure("Treeview", font=("微软雅黑", 14), rowheight=26, indent=45) 
+        style.configure("Treeview", font=("微软雅黑", 10), rowheight=26, indent=45) 
         style.configure("Treeview.Heading", font=("微软雅黑", 10, "bold")) # 表头字体
 
     def refresh_all(self):
